@@ -26,14 +26,14 @@ def get_metrics(data: dict):
 
 def mean_pull_requests(data: dict) -> datetime.timedelta:
     diffs = _diff_pull_requests(data)
-    return datetime.timedelta(
+    return str(datetime.timedelta(
         seconds=statistics.mean(elem.total_seconds() for elem in diffs)
-    )
+    ))
 
 
 def median_pull_requests(data: dict) -> datetime.timedelta:
     diffs = _diff_pull_requests(data)
-    return statistics.median(diffs)
+    return str(statistics.median(diffs))
 
 
 def _diff_pull_requests(data: dict) -> [datetime.datetime]:
