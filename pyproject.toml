@@ -9,6 +9,10 @@ dependencies = [
     "gql>=3.4.1",
     "python-dotenv>=1.0.0",
     "beautifulsoup4>=4.12.2",
+    "rich>=13.4.2",
+    "PyGithub>=1.59.0",
+    "requests-toolbelt>=1.0.0",
+    "html5lib>=1.1",
 ]
 requires-python = ">=3.10"
 readme = "README.md"

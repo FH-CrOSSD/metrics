@@ -1,13 +1,14 @@
-from crossd_metrics import ds, client
-from gql.dsl import dsl_gql, DSLQuery, DSLInlineFragment
-from typing import TypeVar
 from abc import ABC, abstractmethod
+from typing import TypeVar
+
+from crossd_metrics import client, ds
+from gql.dsl import DSLQuery, dsl_gql
 
 _Self = TypeVar('_Self', bound='Request')
 
 
 class Request(ABC):
-    """docstring for Repository."""
+    """docstring for Request."""
     _RATELIMIT_QUERY = ds.Query.rateLimit.select(
         ds.RateLimit.cost, ds.RateLimit.limit, ds.RateLimit.remaining,
         ds.RateLimit.resetAt, ds.RateLimit.nodeCount, ds.RateLimit.used)
@@ -26,6 +27,9 @@ class Request(ABC):
 
     @abstractmethod
     def execute(self, rate_limit=False) -> dict:
+        if not self.query.selection_set.selections:
+            return {}
+
         query_parts = [self.query]
         if rate_limit:
             query_parts.append(self._RATELIMIT_QUERY)
