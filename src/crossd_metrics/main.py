@@ -3,15 +3,14 @@
 
 import json
 
-from crossd_metrics.metrics import (get_metrics, mean_pull_requests,
-                                    median_pull_requests)
+from crossd_metrics.metrics import get_metrics, mean_pull_requests, median_pull_requests
 from crossd_metrics.Organization import Organization
 from crossd_metrics.Repository import Repository
 from crossd_metrics.RepositoryOwner import RepositoryOwner
 from crossd_metrics.User import User
 from rich.console import Console
 
-console = Console()
+console = Console(force_terminal=True)
 # print(
 #     Repository(owner="laurent22", name="Joplin").ask_funding_links().
 #     ask_security_policy().ask_dependencies().ask_contributing().ask_feature_requests().ask_closed_feature_requests().ask_dependents().execute())
@@ -29,8 +28,8 @@ console.rule("Data Retrieval")
 #                  name="Joplin").ask_all().execute(rate_limit=True,
 #                                                   verbose=True)
 # console.log(res)
-console.log(RepositoryOwner(login="numpy").ask_all().execute())
-console.log(Repository(owner="numpy",name="numpy").ask_funding_links().execute())
+# console.log(RepositoryOwner(login="numpy").ask_all().execute())
+# console.log(Repository(owner="numpy",name="numpy").ask_funding_links().execute())
 
 # json_res = json.dumps(res)
 

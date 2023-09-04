@@ -41,7 +41,7 @@ class Repository(Request):
         self.crawl = []
         self.rest = []
         self.post_graphql = []
-        self.console = Console()
+        self.console = Console(force_terminal=True)
 
     def _reset_query(self) -> None:
         self.query = ds.Query.repository(owner=self.owner, name=self.name)
