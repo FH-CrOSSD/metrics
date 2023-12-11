@@ -81,6 +81,9 @@ class Repository(Request):
                     ds.DependencyGraphManifestEdge.node.select(
                         ds.DependencyGraphManifest.filename,
                         ds.DependencyGraphManifest.dependenciesCount,
+                        ds.DependencyGraphManifest.dependencies(first=0).select(
+                            ds.DependencyGraphDependencyConnection.totalCount
+                        ),
                     ),
                 ),
                 ds.DependencyGraphManifestConnection.totalCount,
@@ -348,6 +351,10 @@ class Repository(Request):
                 except GraphQLError:
                     # Break if query is empty (local grapqhl error)
                     break
+
+                if not tmp:
+                    break
+
                 # merge new edges into results
                 for elem in tmp["repository"]:
                     # update totalCount in case it changed
