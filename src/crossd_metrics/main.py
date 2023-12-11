@@ -24,21 +24,29 @@ console = Console(force_terminal=True)
 #         owner="FH-CrOSSD",
 #         name="crossd.tech").ask_workflows().execute()))#.execute(rate_limit=True)
 console.rule("Data Retrieval")
-# res = Repository(owner="laurent22",
-#                  name="Joplin").ask_all().execute(rate_limit=True,
-#                                                   verbose=True)
+# res = (
+#     Repository(owner="laurent22", name="Joplin")
+#     .ask_all()
+#     .execute(rate_limit=True, verbose=True)
+# )
+
+res = (
+    Repository(owner="FH-CrOSSD", name="crossd.tech")
+    .ask_all()
+    .execute(rate_limit=True, verbose=True)
+)
 # console.log(res)
 # console.log(RepositoryOwner(login="numpy").ask_all().execute())
 # console.log(Repository(owner="numpy",name="numpy").ask_funding_links().execute())
 
-# json_res = json.dumps(res)
+json_res = json.dumps(res)
 
-# open("test.json", "w").write(json_res)
+open("test2.json", "w").write(json_res)
 
 console.rule("Metrics")
 # console.log(f"mean pull requests: {mean_pull_requests(json_res)}")
 # console.log(f"median pull requests: {median_pull_requests(json_res)}")
-console.log(get_metrics(json.loads(open("test.json").read())))
+# console.log(get_metrics(json.loads(open("test.json").read())))
 
 # print(User(login="sindresorhus").ask_all().execute())
 # print(Organization(login="KeeWeb").ask_all().execute())
