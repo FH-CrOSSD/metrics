@@ -35,13 +35,14 @@ res = (
     .ask_all()
     .execute(rate_limit=True, verbose=True)
 )
-# console.log(res)
+console.log(res)
+print(get_metrics(res))
 # console.log(RepositoryOwner(login="numpy").ask_all().execute())
 # console.log(Repository(owner="numpy",name="numpy").ask_funding_links().execute())
 
-json_res = json.dumps(res)
+# json_res = json.dumps(res)
 
-open("test2.json", "w").write(json_res)
+# open("test2.json", "w").write(json_res)
 
 console.rule("Metrics")
 # console.log(f"mean pull requests: {mean_pull_requests(json_res)}")

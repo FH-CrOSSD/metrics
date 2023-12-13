@@ -58,6 +58,15 @@ class Repository(Request):
             .ask_pull_requests()
             .ask_readme()
             .ask_workflows()
+            .ask_identifiers()
+        )
+        return self
+
+    def ask_identifiers(self) -> _Self:
+        self.query.select(
+            ds.Repository.name,
+            ds.Repository.nameWithOwner,
+            ds.Repository.owner.select(ds.RepositoryOwner.login),
         )
         return self
 
@@ -81,6 +90,7 @@ class Repository(Request):
                     ds.DependencyGraphManifestEdge.node.select(
                         ds.DependencyGraphManifest.filename,
                         ds.DependencyGraphManifest.dependenciesCount,
+                        # without requesting edges, github returns always a dependencyCount of 0
                         ds.DependencyGraphManifest.dependencies(first=0).select(
                             ds.DependencyGraphDependencyConnection.totalCount
                         ),

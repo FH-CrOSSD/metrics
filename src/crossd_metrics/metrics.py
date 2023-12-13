@@ -21,18 +21,29 @@ def get_metrics(data: dict):
         "uses_workflows": uses_workflows(data),
         "current_state_workflows": current_state_workflows(data),
         "is_fundable": has_funding_links(data),
+        "identity": {
+            "name": name(data),
+            "owner": owner(data),
+            "name_with_owner": name_with_owner(data),
+        },
     }
 
 
 def mean_pull_requests(data: dict) -> datetime.timedelta:
     diffs = _diff_pull_requests(data)
-    return str(datetime.timedelta(
-        seconds=statistics.mean(elem.total_seconds() for elem in diffs)
-    ))
+    if not diffs:
+        return None
+    return str(
+        datetime.timedelta(
+            seconds=statistics.mean(elem.total_seconds() for elem in diffs)
+        )
+    )
 
 
 def median_pull_requests(data: dict) -> datetime.timedelta:
     diffs = _diff_pull_requests(data)
+    if not diffs:
+        return None
     return str(statistics.median(diffs))
 
 
@@ -47,6 +58,18 @@ def _diff_pull_requests(data: dict) -> [datetime.datetime]:
             )
         )
     return diffs
+
+
+def name(data: dict) -> str:
+    return data["repository"]["name"]
+
+
+def name_with_owner(data: dict) -> str:
+    return data["repository"]["nameWithOwner"]
+
+
+def owner(data: dict) -> str:
+    return data["repository"]["owner"]["login"]
 
 
 def dependents_count(data: dict) -> int:
