@@ -59,6 +59,7 @@ class Repository(Request):
             .ask_readme()
             .ask_workflows()
             .ask_identifiers()
+            .ask_description()
         )
         return self
 
@@ -227,6 +228,10 @@ class Repository(Request):
 
     def ask_workflows(self) -> _Self:
         self.rest.append(self._get_workflows)
+        return self
+    
+    def ask_description(self) -> _Self:
+        self.query.select(ds.Repository.description)
         return self
 
     def _get_workflows(self) -> dict:
