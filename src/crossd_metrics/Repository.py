@@ -161,14 +161,11 @@ class Repository(Request):
         return {
             "dependents": int(
                 bs4.BeautifulSoup(
-                    urllib.request.urlopen(
-                        f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY"
-                    ).read(),
-                    features="html5lib",
-                )
+                    urllib.request.urlopen(f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY").read(), features="html5lib",)
                 .find(
                     "a",
-                    href=f"/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY",
+                    # href=f"/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY",
+                    href=lambda href: href and href.startswith(f"/{quote(self.owner)}/{quote(self.name)}/network/dependents") and "dependent_type=REPOSITORY" in href
                 )
                 .get_text()
                 .strip()
