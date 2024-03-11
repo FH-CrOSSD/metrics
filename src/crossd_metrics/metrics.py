@@ -29,22 +29,20 @@ def get_metrics(data: dict):
     }
 
 
-def mean_pull_requests(data: dict) -> datetime.timedelta:
+def mean_pull_requests(data: dict) -> int:
     diffs = _diff_pull_requests(data)
     if not diffs:
         return None
-    return str(
-        datetime.timedelta(
-            seconds=statistics.mean(elem.total_seconds() for elem in diffs)
-        )
-    )
+    return datetime.timedelta(
+        seconds=statistics.mean(elem.total_seconds() for elem in diffs)
+    ) / datetime.timedelta(milliseconds=1)
 
 
-def median_pull_requests(data: dict) -> datetime.timedelta:
+def median_pull_requests(data: dict) -> int:
     diffs = _diff_pull_requests(data)
     if not diffs:
         return None
-    return str(statistics.median(diffs))
+    return statistics.median(diffs) / datetime.timedelta(milliseconds=1)
 
 
 def _diff_pull_requests(data: dict) -> [datetime.datetime]:
