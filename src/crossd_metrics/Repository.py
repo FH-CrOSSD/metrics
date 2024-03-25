@@ -226,7 +226,7 @@ class Repository(Request):
     def ask_workflows(self) -> _Self:
         self.rest.append(self._get_workflows)
         return self
-    
+
     def ask_description(self) -> _Self:
         self.query.select(ds.Repository.description)
         return self
@@ -394,7 +394,7 @@ class Repository(Request):
                 # checks if something returned 0 elements and removes the followup query if necessary
                 # this is needed, because Github returns a wrong totalCount for dependencyManifestGraphs
                 # (e.g. tested with laurent22/Joplin which returned totalCount==81 whereas the real count was 80)
-                for i, entry in enumerate(post_graphql):
+                for i, entry in enumerate(self.post_graphql):
                     # tmp contained not elements
                     if not len(entry["key"](tmp)["edges"]) or entry["key"](self.result)[
                         "totalCount"
