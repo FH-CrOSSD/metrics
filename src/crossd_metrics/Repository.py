@@ -315,6 +315,7 @@ class Repository(Request):
             sleep_time = int(timestamp) - int(time.time())
         # add a little grace period
         sleep_time += 5
+        self.console.log("rate limit exceeded - sleeping for " + str(sleep_time))
         time.sleep(sleep_time)
         # if rate limit is still exceed for whatever reason, crash and let the task queue retry later
         return func()
