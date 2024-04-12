@@ -3,13 +3,16 @@ import os.path
 import urllib
 from typing import TypeVar
 from urllib.parse import quote
+import gql
+import time
+import github
 
 import bs4
 from gql.dsl import DSLInlineFragment
 from graphql import GraphQLError
 from rich.progress import track
 
-from crossd_metrics import constants, ds, gh, utils
+from crossd_metrics import constants, ds, gh, transport, utils
 from crossd_metrics.Request import Request
 
 _Self = TypeVar("_Self", bound="Repository")
@@ -17,12 +20,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from rich.console import Console
 
-# from multiprocessing.pool import ThreadPool as Pool
-# from multiprocessing import Pool
-
 
 class Repository(Request):
-    """docstring for Repository."""
+    """Class for retrieving information about a GitHub repository."""
 
     _RATELIMIT_QUERY = ds.Query.rateLimit.select(
         ds.RateLimit.cost,
@@ -161,11 +161,19 @@ class Repository(Request):
         return {
             "dependents": int(
                 bs4.BeautifulSoup(
-                    urllib.request.urlopen(f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY").read(), features="html5lib",)
+                    urllib.request.urlopen(
+                        f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY"
+                    ).read(),
+                    features="html5lib",
+                )
                 .find(
                     "a",
                     # href=f"/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY",
-                    href=lambda href: href and href.startswith(f"/{quote(self.owner)}/{quote(self.name)}/network/dependents") and "dependent_type=REPOSITORY" in href
+                    href=lambda href: href
+                    and href.startswith(
+                        f"/{quote(self.owner)}/{quote(self.name)}/network/dependents"
+                    )
+                    and "dependent_type=REPOSITORY" in href,
                 )
                 .get_text()
                 .strip()
@@ -301,21 +309,15 @@ class Repository(Request):
                 count += 1
         return res
 
-        # return {
-        #     "workflow_runs": [{
-        #         "name":
-        #         wf.name,
-        #         "conclusion":
-        #         wf.conclusion,
-        #         "created_at":
-        #         datetime.datetime.strftime(wf.created_at,
-        #                                    "%Y-%m-%dT%H:%M:%S%z"),
-        #         "updated_at":
-        #         datetime.datetime.strftime(wf.updated_at,
-        #                                    "%Y-%m-%dT%H:%M:%S%z")
-        #     } for wf in gh.get_repo(
-        #         f"{self.owner}/{self.name}").get_workflow_runs()]
-        # }
+    def handle_rate_limit(self, timestamp, func):
+        sleep_time = 60
+        if timestamp:
+            sleep_time = int(timestamp) - int(time.time())
+        # add a little grace period
+        sleep_time += 5
+        time.sleep(sleep_time)
+        # if rate limit is still exceed for whatever reason, crash and let the task queue retry later
+        return func()
 
     def execute(self, rate_limit=False, verbose=False) -> dict:
         # execute first graphql query (paginations are done later), execute things to crawl from website and do rest api calls
@@ -329,18 +331,44 @@ class Repository(Request):
         rest = tpe.submit(self._execute_rest)
         tpe.shutdown()
 
-        # multiprocess Pool or ThreadPool
-        # p = Pool(3)
-        # graph = p.apply_async(super().execute, [rate_limit])
-        # crawl = p.apply_async(self._execute_crawl)
-        # rest = p.apply_async(self._execute_rest)
-        # p.close()
-        # p.join()
-        # self.result = (
-        #     super().execute(rate_limit) | self._execute_crawl() | self._execute_rest()
-        # )
-        # self.result = graph.get() | crawl.get() | rest.get()
-        self.result = graph.result() | crawl.result() | rest.result()
+        gres = {}
+        try:
+            gres = graph.result()
+        except gql.transport.exceptions.TransportServerError as tse:
+            if tse.code in [403, 429]:
+                gres = self.handle_rate_limit(
+                    transport.response_headers.get("x-ratelimit-reset"),
+                    lambda: super().execute(rate_limit),
+                )
+            else:
+                raise tse
+
+        cres = {}
+        try:
+            cres = crawl.result()
+        except urllib.error.HTTPError as httpe:
+            if httpe.status in [403, 429]:
+                cres = self.handle_rate_limit(
+                    httpe.headers["x-ratelimit-reset"],
+                    self._execute_crawl,
+                )
+            else:
+                raise httpe
+
+        rres = {}
+        try:
+            rres = rest.result()
+        except github.RateLimitExceededException as rlee:
+            if rlee.status in [403, 429]:
+                rres = self.handle_rate_limit(
+                    rlee.headers["x-ratelimit-reset"],
+                    self._execute_rest,
+                )
+            else:
+                raise rlee
+
+        self.result = gres | cres | rres
+        # self.result = graph.result() | crawl.result() | rest.result()
         count = 1
 
         with self.console.status("processing paginations ..."):
@@ -364,6 +392,14 @@ class Repository(Request):
                 except GraphQLError:
                     # Break if query is empty (local grapqhl error)
                     break
+                except gql.transport.exceptions.TransportServerError as tse:
+                    if tse.code in [403, 429]:
+                        gres = self.handle_rate_limit(
+                            transport.response_headers.get("x-ratelimit-reset"),
+                            lambda: super().execute(rate_limit),
+                        )
+                    else:
+                        raise tse
 
                 if not tmp:
                     break
