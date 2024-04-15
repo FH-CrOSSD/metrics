@@ -248,37 +248,32 @@ class Repository(Request):
         for wf in track(
             wfs, description="Retrieving status of workflows", total=wfs.totalCount
         ):
-            runs = wf.get_runs().reversed
-            if runs.totalCount > 0:
-                i = 0
-                run = runs[i]
-                # get last finished run (ignore currently running runs)
-                while not run.conclusion:
-                    run = runs[i]
-                    i += 1
-                res.append(
-                    {
-                        "name": wf.name,
-                        "id": wf.id,
-                        "path": wf.path,
-                        "state": wf.state,
-                        "created_at": datetime.datetime.strftime(
-                            wf.created_at, "%Y-%m-%dT%H:%M:%S%z"
-                        ),
-                        "updated_at": datetime.datetime.strftime(
-                            wf.updated_at, "%Y-%m-%dT%H:%M:%S%z"
-                        ),
-                        "last_run": {
-                            "conclusion": run.conclusion,
+            for run in wf.get_runs():
+                if run.conclusion:
+                    res.append(
+                        {
+                            "name": wf.name,
+                            "id": wf.id,
+                            "path": wf.path,
+                            "state": wf.state,
                             "created_at": datetime.datetime.strftime(
-                                run.created_at, "%Y-%m-%dT%H:%M:%S%z"
+                                wf.created_at, "%Y-%m-%dT%H:%M:%S%z"
                             ),
                             "updated_at": datetime.datetime.strftime(
-                                run.updated_at, "%Y-%m-%dT%H:%M:%S%z"
+                                wf.updated_at, "%Y-%m-%dT%H:%M:%S%z"
                             ),
-                        },
-                    }
-                )
+                            "last_run": {
+                                "conclusion": run.conclusion,
+                                "created_at": datetime.datetime.strftime(
+                                    run.created_at, "%Y-%m-%dT%H:%M:%S%z"
+                                ),
+                                "updated_at": datetime.datetime.strftime(
+                                    run.updated_at, "%Y-%m-%dT%H:%M:%S%z"
+                                ),
+                            },
+                        }
+                    )
+                    break
         gh.per_page = old_per_page
         # self.console.log(res)
         return {"workflows": res}
