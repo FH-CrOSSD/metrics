@@ -158,20 +158,23 @@ class Repository(Request):
         return self
 
     def _get_dependents(self) -> dict:
+        response = urllib.request.urlopen(
+            f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY"
+        )
+        # get owner and name from the result url (github may redirect e.g. if owner name changed)
+        # for finding the correct a tag, we need the current owner and name
+        owner, name = urllib.parse.urlparse(response.geturl()).path.split("/")[1:3]
         return {
             "dependents": int(
                 bs4.BeautifulSoup(
-                    urllib.request.urlopen(
-                        f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY"
-                    ).read(),
+                    response.read(),
                     features="html5lib",
                 )
                 .find(
                     "a",
-                    # href=f"/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY",
                     href=lambda href: href
                     and href.startswith(
-                        f"/{quote(self.owner)}/{quote(self.name)}/network/dependents"
+                        f"/{quote(owner)}/{quote(name)}/network/dependents"
                     )
                     and "dependent_type=REPOSITORY" in href,
                 )
