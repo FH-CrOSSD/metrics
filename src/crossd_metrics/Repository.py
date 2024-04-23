@@ -379,8 +379,11 @@ class Repository(Request):
                 self._reset_query()
                 for entry in post_graphql:
                     # do not execute queries if pagination is not required (all results transmitted in initial query)
-                    if entry["key"](self.result)["totalCount"] > len(
-                        entry["key"](self.result)["edges"]
+                    # length > 0, because github gql returns totalCount: 1 when the list of edges is empty 
+                    if (
+                        entry["key"](self.result)["totalCount"]
+                        > (length := len(entry["key"](self.result)["edges"]))
+                        and length > 0
                     ):
                         entry["method"](
                             after=entry["key"](self.result)["edges"][-1]["cursor"]
