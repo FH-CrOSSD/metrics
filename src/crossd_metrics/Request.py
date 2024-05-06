@@ -4,14 +4,20 @@ from typing import TypeVar
 from crossd_metrics import client, ds
 from gql.dsl import DSLQuery, dsl_gql
 
-_Self = TypeVar('_Self', bound='Request')
+_Self = TypeVar("_Self", bound="Request")
 
 
 class Request(ABC):
-    """docstring for Request."""
+    """Defines basic methods for a GitHub graphql request."""
+
     _RATELIMIT_QUERY = ds.Query.rateLimit.select(
-        ds.RateLimit.cost, ds.RateLimit.limit, ds.RateLimit.remaining,
-        ds.RateLimit.resetAt, ds.RateLimit.nodeCount, ds.RateLimit.used)
+        ds.RateLimit.cost,
+        ds.RateLimit.limit,
+        ds.RateLimit.remaining,
+        ds.RateLimit.resetAt,
+        ds.RateLimit.nodeCount,
+        ds.RateLimit.used,
+    )
 
     @abstractmethod
     def __init__(self):
@@ -20,9 +26,7 @@ class Request(ABC):
 
     @abstractmethod
     def ask_all(self) -> _Self:
-        self.ask_dependencies().ask_funding_links().ask_security_policy(
-        ).ask_contributing().ask_feature_requests(
-        ).ask_closed_feature_requests()
+        self.ask_dependencies().ask_funding_links().ask_security_policy().ask_contributing().ask_feature_requests().ask_closed_feature_requests()
         return self
 
     @abstractmethod

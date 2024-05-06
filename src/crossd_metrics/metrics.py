@@ -1,13 +1,18 @@
 # -*- coding=utf-8 -*-
 
 import datetime
-import json
 import statistics
 
 from crossd_metrics import constants, utils
 
 
 def get_metrics(data: dict):
+    """Convenience function to retrieve all metrics.
+
+    Args:
+        data: repo data retrieved by Repository().ask_all().execute()
+
+    """
     return {
         "mean_pull_requests": mean_pull_requests(data),
         "median_pull_requests": median_pull_requests(data),
@@ -33,6 +38,7 @@ def mean_pull_requests(data: dict) -> int:
     diffs = _diff_pull_requests(data)
     if not diffs:
         return None
+    # mean of all pull request merging times and conversion to milliseconds
     return datetime.timedelta(
         seconds=statistics.mean(elem.total_seconds() for elem in diffs)
     ) / datetime.timedelta(milliseconds=1)
@@ -42,12 +48,13 @@ def median_pull_requests(data: dict) -> int:
     diffs = _diff_pull_requests(data)
     if not diffs:
         return None
+    # median of all pull request merging times and conversion to milliseconds
     return statistics.median(diffs) / datetime.timedelta(milliseconds=1)
 
 
 def _diff_pull_requests(data: dict) -> [datetime.datetime]:
-    # data = json.loads(data)
     diffs = []
+    # calculate time between opening a pull request and merging it
     for elem in data["repository"]["pullRequests"]["edges"]:
         diffs.append(
             datetime.datetime.strptime(elem["node"]["mergedAt"], "%Y-%m-%dT%H:%M:%S%z")
@@ -79,6 +86,7 @@ def has_security_policy(data: dict) -> bool:
 
 
 def dependency_count(data: dict) -> int:
+    # dependency count of all dependency files github knows
     return sum(
         elem["node"]["dependenciesCount"]
         for elem in data["repository"]["dependencyGraphManifests"]["edges"]
@@ -102,11 +110,11 @@ def closed_feature_request_count(data: dict) -> int:
 
 
 def has_collaboration_platform(data: dict) -> bool:
+    # check if readme has social platform urls
     res = {"discord": [], "reddit": [], "slack": []}
     contents = [
         data["repository"][utils.get_readme_index(elem)] for elem in constants.readmes
     ]
-    # print(contents)
     urls = []
     for elem in contents:
         if elem:
@@ -121,28 +129,15 @@ def has_collaboration_platform(data: dict) -> bool:
         if ".slack.com" in url:
             res["slack"].append(url)
 
-    # return any(res['discord'], res['reddit'], res['slack'])
-    # print(res)
     return any(res.values())
 
 
 def uses_workflows(data: dict) -> bool:
     return any([wf["state"] == "active" for wf in data["workflows"]])
-    # return len(data['workflow_runs']) > 0
 
 
 def current_state_workflows(data: dict) -> dict:
     res = {}
-    # for elem in data["workflow_runs"]:
-    #     res.setdefault(
-    #         elem["name"],
-    #         {"created_at": elem["created_at"], "conclusion": elem["conclusion"]},
-    #     )
-    #     if elem["created_at"] > res[elem["name"]]["created_at"]:
-    #         res[elem["name"]] = {
-    #             "created_at": elem["created_at"],
-    #             "conclusion": elem["conclusion"],
-    #         }
 
     for elem in data["workflows"]:
         res.setdefault(

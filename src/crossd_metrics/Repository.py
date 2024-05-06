@@ -24,6 +24,7 @@ from rich.console import Console
 class Repository(Request):
     """Class for retrieving information about a GitHub repository."""
 
+    # for asking rate limit status
     _RATELIMIT_QUERY = ds.Query.rateLimit.select(
         ds.RateLimit.cost,
         ds.RateLimit.limit,
@@ -38,8 +39,11 @@ class Repository(Request):
         self.owner = owner
         self.name = name
         self._reset_query()
+        # stores tasks regarding the github website
         self.crawl = []
+        # stores tasks regarding the github rest api
         self.rest = []
+        # stores followup github graphql tasks (pagination)
         self.post_graphql = []
         self.console = Console(force_terminal=True)
 
@@ -47,6 +51,7 @@ class Repository(Request):
         self.query = ds.Query.repository(owner=self.owner, name=self.name)
 
     def ask_all(self) -> _Self:
+        """Convenience function to retrieve all repo data."""
         (
             self.ask_dependencies()
             .ask_funding_links()
@@ -100,6 +105,7 @@ class Repository(Request):
                 ds.DependencyGraphManifestConnection.totalCount,
             )
         )
+        # for pagination, method: this method, key: dict key in result (to update)
         self.post_graphql.append(
             {
                 "method": self.ask_dependencies,
@@ -111,6 +117,7 @@ class Repository(Request):
         # dependencyGraphManifests{nodes{filename,dependencies{totalCount},dependenciesCount}}
 
     def ask_contributing(self) -> _Self:
+        """Checks possible contribution policy files."""
         blob_fragment = DSLInlineFragment()
         blob_fragment.on(ds.Blob)
         blob_fragment.select(ds.Blob.oid, ds.Blob.byteSize)
@@ -164,6 +171,7 @@ class Repository(Request):
         # get owner and name from the result url (github may redirect e.g. if owner name changed)
         # for finding the correct a tag, we need the current owner and name
         owner, name = urllib.parse.urlparse(response.geturl()).path.split("/")[1:3]
+        # get the number of total dependents from webpage
         return {
             "dependents": int(
                 bs4.BeautifulSoup(
@@ -198,6 +206,7 @@ class Repository(Request):
                 ),
             )
         )
+        # for pagination, method: this method, key: dict key in result (to update)
         self.post_graphql.append(
             {
                 "method": self.ask_pull_requests,
@@ -243,6 +252,7 @@ class Repository(Request):
         return self
 
     def _get_workflows(self) -> dict:
+        # get workflows via REST api (not available via graphql)
         wfs = gh.get_repo(f"{self.owner}/{self.name}").get_workflows()
         res = []
         old_per_page = gh.per_page
@@ -252,6 +262,7 @@ class Repository(Request):
             wfs, description="Retrieving status of workflows", total=wfs.totalCount
         ):
             for run in wf.get_runs():
+                # only check finished workflow runs
                 if run.conclusion:
                     res.append(
                         {
@@ -278,7 +289,6 @@ class Repository(Request):
                     )
                     break
         gh.per_page = old_per_page
-        # self.console.log(res)
         return {"workflows": res}
 
     def _get_workflow_runs(self) -> dict:
@@ -308,6 +318,7 @@ class Repository(Request):
         return res
 
     def handle_rate_limit(self, timestamp, func):
+        """Helper function for checking rate limit and sleeping for the specified time."""
         sleep_time = 60
         if timestamp:
             sleep_time = int(timestamp) - int(time.time())
@@ -324,12 +335,14 @@ class Repository(Request):
             self.console.log("retrieving Data")
         # ThreadPoolExecutor
         # do blocking requests in "parallel"
+        # graphql page 1, crawling and rest api calls are executed in "parallel"
         tpe = ThreadPoolExecutor(3)
         graph = tpe.submit(super().execute, rate_limit)
         crawl = tpe.submit(self._execute_crawl)
         rest = tpe.submit(self._execute_rest)
         tpe.shutdown()
 
+        # get graphql page 1 result from thread and check rate limit
         gres = {}
         try:
             gres = graph.result()
@@ -342,6 +355,7 @@ class Repository(Request):
             else:
                 raise tse
 
+        # get crawling webpage result from thread and check rate limit
         cres = {}
         try:
             cres = crawl.result()
@@ -354,6 +368,7 @@ class Repository(Request):
             else:
                 raise httpe
 
+        # get rest api result from thread and check rate limit
         rres = {}
         try:
             rres = rest.result()
@@ -366,10 +381,11 @@ class Repository(Request):
             else:
                 raise rlee
 
+        # merge all results
         self.result = gres | cres | rres
-        # self.result = graph.result() | crawl.result() | rest.result()
         count = 1
 
+        # handle graphql pagination
         with self.console.status("processing paginations ..."):
             # handle graphql queries that might require pagination
             while self.post_graphql:
@@ -379,7 +395,7 @@ class Repository(Request):
                 self._reset_query()
                 for entry in post_graphql:
                     # do not execute queries if pagination is not required (all results transmitted in initial query)
-                    # length > 0, because github gql returns totalCount: 1 when the list of edges is empty 
+                    # length > 0, because github gql returns totalCount: 1 when the list of edges is empty
                     if (
                         entry["key"](self.result)["totalCount"]
                         > (length := len(entry["key"](self.result)["edges"]))
@@ -395,6 +411,7 @@ class Repository(Request):
                     # Break if query is empty (local grapqhl error)
                     break
                 except gql.transport.exceptions.TransportServerError as tse:
+                    # sleep if graphql rate limit exceeded
                     if tse.code in [403, 429]:
                         gres = self.handle_rate_limit(
                             transport.response_headers.get("x-ratelimit-reset"),
@@ -404,6 +421,7 @@ class Repository(Request):
                         raise tse
 
                 if not tmp:
+                    # result of pagination empty
                     break
 
                 # merge new edges into results

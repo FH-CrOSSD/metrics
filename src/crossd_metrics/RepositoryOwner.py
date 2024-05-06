@@ -3,11 +3,11 @@ from typing import TypeVar
 from crossd_metrics import ds
 from crossd_metrics.Sponsorable import Sponsorable
 
-_Self = TypeVar('_Self', bound='RepositoryOwner')
+_Self = TypeVar("_Self", bound="RepositoryOwner")
 
 
 class RepositoryOwner(Sponsorable):
-    """docstring for RepositoryOwner."""
+    """Class for retrieving information about a GitHub repository owner."""
 
     def __init__(self, login: str):
         super(RepositoryOwner, self).__init__()
