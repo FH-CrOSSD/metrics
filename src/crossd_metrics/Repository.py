@@ -1,19 +1,20 @@
 import datetime
 import os.path
+import time
 import urllib
 from typing import TypeVar
 from urllib.parse import quote
-import gql
-import time
-import github
 
 import bs4
+import github
+import gql
+import gql.transport
+import gql.transport.exceptions
+from crossd_metrics import constants, ds, gh, transport, utils
+from crossd_metrics.Request import Request
 from gql.dsl import DSLInlineFragment
 from graphql import GraphQLError
 from rich.progress import track
-
-from crossd_metrics import constants, ds, gh, transport, utils
-from crossd_metrics.Request import Request
 
 _Self = TypeVar("_Self", bound="Repository")
 from concurrent.futures import ThreadPoolExecutor
@@ -354,6 +355,37 @@ class Repository(Request):
                 )
             else:
                 raise tse
+        except gql.transport.exceptions.TransportQueryError as tqe:
+            # handling this error is not necessary for the paginations as the connection uses a session
+            # so if the Github loadbalancer assigns us to a host that can process our request
+            # the paginations will also work as they are processed by the same host
+            if (
+                len(tqe.errors) == 1
+                and tqe.errors[0]["path"] == ["repository", "dependencyGraphManifests"]
+                and tqe.errors[0]["message"] == "timedout"
+            ):
+                for i in track(
+                    range(20),
+                    description="Retrying due to timedout dependencyGraphManifests",
+                ):
+                    try:
+                        gres = super().execute(rate_limit)
+                        break
+                    except gql.transport.exceptions.TransportQueryError as tqe_inner:
+                        if (
+                            len(tqe_inner.errors) == 1
+                            and tqe_inner.errors[0]["path"]
+                            == ["repository", "dependencyGraphManifests"]
+                            and tqe_inner.errors[0]["message"] == "timedout"
+                        ):
+                            # self.console.log("timedout dependencyGraphManifests")
+                            pass
+                        else:
+                            raise tqe_inner
+                else:
+                    raise tqe
+            else:
+                raise tqe
 
         # get crawling webpage result from thread and check rate limit
         cres = {}
