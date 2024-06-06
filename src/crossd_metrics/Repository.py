@@ -91,7 +91,7 @@ class Repository(Request):
 
     def ask_dependencies(self, after=None) -> _Self:
         self.query.select(
-            ds.Repository.dependencyGraphManifests(first=10, after=after).select(
+            ds.Repository.dependencyGraphManifests(first=5, after=after).select(
                 ds.DependencyGraphManifestConnection.edges.select(
                     ds.DependencyGraphManifestEdge.cursor,
                     ds.DependencyGraphManifestEdge.node.select(
