@@ -8,7 +8,5 @@ paths = [".github", "", "docs"]
 endings = [".md", ".txt", ""]
 # concat paths, "README" and endings to valid combinations
 readmes = [
-    "/".join(filter(None, (path, f"README{ending}")))
-    for path in paths
-    for ending in endings
+    "/".join(filter(None, (path, f"README{ending}"))) for path in paths for ending in endings
 ]

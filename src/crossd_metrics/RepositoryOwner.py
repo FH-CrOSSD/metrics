@@ -1,17 +1,27 @@
-from typing import TypeVar
+from typing import Self, override
 
-from crossd_metrics import ds
 from crossd_metrics.Sponsorable import Sponsorable
-
-_Self = TypeVar("_Self", bound="RepositoryOwner")
 
 
 class RepositoryOwner(Sponsorable):
-    """Class for retrieving information about a GitHub repository owner."""
+    """Retrieves information about a GitHub repository owner."""
 
+    @override
     def __init__(self, login: str):
-        super(RepositoryOwner, self).__init__()
-        self.query = ds.Query.repositoryOwner(login=login)
+        """
+        Initializes the RepositoryOwner object.
 
-    def ask_all(self) -> _Self:
+        Args:
+          login: str: Github repository owner username.
+        """
+        super(RepositoryOwner, self).__init__()
+        self.query = self.ds.Query.repositoryOwner(login=login)
+
+    @override
+    def ask_all(self) -> Self:
+        """Queue all tasks to be performed on the GitHub repository owner.
+
+        Returns:
+          Self: The current instance of the RepositoryOwner class.
+        """
         return super().ask_all()

@@ -1,17 +1,25 @@
-from typing import TypeVar
+from typing import Self, override
 
-from crossd_metrics import ds
 from crossd_metrics.Sponsorable import Sponsorable
-
-_Self = TypeVar("_Self", bound="Organization")
 
 
 class Organization(Sponsorable):
-    """Class for retrieving information about a GitHub organization."""
+    """Retrieves information about a GitHub organization."""
 
+    @override
     def __init__(self, login: str):
-        super(Organization, self).__init__()
-        self.query = ds.Query.organization(login=login)
+        """Initializes the Organization object.
 
-    def ask_all(self) -> _Self:
+        Args:
+          login: str: Github organization username.
+        """
+        super(Organization, self).__init__()
+        self.query = self.ds.Query.organization(login=login)
+
+    @override
+    def ask_all(self) -> Self:
+        """Queue all tasks to be performed on the GitHub organization.
+        Returns:
+          Self: The current instance of the Organization class.
+        """
         return super().ask_all()

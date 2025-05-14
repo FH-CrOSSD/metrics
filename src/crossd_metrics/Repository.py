@@ -1,60 +1,78 @@
 import datetime
-import os.path
-import time
+import json
+import threading
+import typing
 import urllib
-from typing import TypeVar
+import urllib.request
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
+from typing import Literal, Self, override
 from urllib.parse import quote
 
-import bs4
-import github
-import gql
-import gql.transport
-import gql.transport.exceptions
-from crossd_metrics import constants, ds, gh, transport, utils
-from crossd_metrics.Request import Request
-from gql.dsl import DSLInlineFragment
-from graphql import GraphQLError
+import bs4  # type: ignore[import]
+import requests  # type: ignore[import]
+from crossd_metrics import constants, utils
+from crossd_metrics.CloneRequest import CloneRequest
+from crossd_metrics.CrawlRequest import CrawlRequest
+from crossd_metrics.GraphRequest import GraphRequest
+from crossd_metrics.RestRequest import RestRequest
+from crossd_metrics.utils import (
+    IsoDate,
+    IssueCommentOrder,
+    IssueOrder,
+    PullRequestOrder,
+    RepositoryOrder,
+    get_past,
+    get_security_advisories,
+    handle_rate_limit,
+    merge_dicts,
+    simple_pagination,
+)
+from gql.dsl import DSLInlineFragment  # type: ignore[import]
+from rich.console import Console
 from rich.progress import track
 
-_Self = TypeVar("_Self", bound="Repository")
-from concurrent.futures import ThreadPoolExecutor
 
-from rich.console import Console
-
-
-class Repository(Request):
-    """Class for retrieving information about a GitHub repository."""
-
-    # for asking rate limit status
-    _RATELIMIT_QUERY = ds.Query.rateLimit.select(
-        ds.RateLimit.cost,
-        ds.RateLimit.limit,
-        ds.RateLimit.remaining,
-        ds.RateLimit.resetAt,
-        ds.RateLimit.nodeCount,
-        ds.RateLimit.used,
-    )
+class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
+    """Retrieves information about a GitHub repository."""
 
     def __init__(self, owner: str, name: str):
-        super(Repository, self).__init__()
+        """Initializes the Repository object.
+
+        Args:
+          owner: str: Github repository owner username
+          name: str: Github repository name
+        """
+        # Github owner username
         self.owner = owner
+        # Github repository name
         self.name = name
-        self._reset_query()
-        # stores tasks regarding the github website
-        self.crawl = []
-        # stores tasks regarding the github rest api
-        self.rest = []
-        # stores followup github graphql tasks (pagination)
-        self.post_graphql = []
+        # rich object for logging
         self.console = Console(force_terminal=True)
+        # indicates whether to keep queue running
+        self.keep_running = True
+        # retrieve data from the last 6 months
+        self.since = datetime.timedelta(days=6 * 30)
+        # self.since = None
+        super(Repository, self).__init__(owner=owner, name=name)
 
+    @override
     def _reset_query(self) -> None:
-        self.query = ds.Query.repository(owner=self.owner, name=self.name)
+        """Resets the GraphQL query object."""
+        self.query = self.ds.Query.repository(owner=self.owner, name=self.name)
 
-    def ask_all(self) -> _Self:
-        """Convenience function to retrieve all repo data."""
+    @override
+    def ask_all(self) -> Self:
+        """Convenience function to retrieve all repo data.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         (
-            self.ask_dependencies()
+            self.ask_dependencies_sbom()
+            # .ask_dependencies_crawl()
+            # .ask_dependencies()
             .ask_funding_links()
             .ask_security_policy()
             .ask_contributing()
@@ -66,80 +84,500 @@ class Repository(Request):
             .ask_workflows()
             .ask_identifiers()
             .ask_description()
+            .ask_license()
+            .ask_dates()
+            .ask_subscribers()
+            .ask_community_profile()
+            .ask_contributors()
+            # .ask_releases()
+            .ask_releases_crawl()
+            # .ask_releases()
+            .ask_security_advisories()
+            .ask_issues()
+            .ask_forks()
+            # .ask_workflow_runs()
+            # .ask_dependabot_alerts()
+            .ask_commits_clone()
+            # .ask_commits()
+            # .ask_commit_files()
+            # .ask_commit_details()
+            .ask_branches()
         )
         return self
 
-    def ask_identifiers(self) -> _Self:
+    def ask_identifiers(self) -> Self:
+        """Queue graphql task to retrieve the repository identifiers owner, name and nameWithOwner.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         self.query.select(
-            ds.Repository.name,
-            ds.Repository.nameWithOwner,
-            ds.Repository.owner.select(ds.RepositoryOwner.login),
+            self.ds.Repository.name,
+            self.ds.Repository.nameWithOwner,
+            self.ds.Repository.owner.select(self.ds.RepositoryOwner.login),
         )
         return self
 
-    def ask_funding_links(self) -> _Self:
+    def ask_funding_links(self) -> Self:
+        """Queue graphql task to retrieve the repository funding links.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         self.query.select(
-            ds.Repository.fundingLinks.select(
-                ds.FundingLink.platform, ds.FundingLink.url
+            self.ds.Repository.fundingLinks.select(
+                self.ds.FundingLink.platform, self.ds.FundingLink.url
             )
         )
         return self
 
-    def ask_security_policy(self) -> _Self:
-        self.query.select(ds.Repository.isSecurityPolicyEnabled)
+    def ask_license(self) -> Self:
+        """Queue graphql task to retrieve the repository license information.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(self.ds.Repository.licenseInfo.select(self.ds.License.spdxId))
         return self
 
-    def ask_dependencies(self, after=None) -> _Self:
+    def ask_dates(self) -> Self:
+        """Queue graphql task to retrieve the repository dates (createdAt, updatedAt, archivedAt, pushedAt).
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         self.query.select(
-            ds.Repository.dependencyGraphManifests(first=5, after=after).select(
-                ds.DependencyGraphManifestConnection.edges.select(
-                    ds.DependencyGraphManifestEdge.cursor,
-                    ds.DependencyGraphManifestEdge.node.select(
-                        ds.DependencyGraphManifest.filename,
-                        ds.DependencyGraphManifest.dependenciesCount,
+            self.ds.Repository.createdAt,
+            self.ds.Repository.updatedAt,
+            self.ds.Repository.archivedAt,
+            self.ds.Repository.pushedAt,
+        )
+        return self
+
+    def ask_subscribers(self) -> Self:
+        """Queue graphql graphql task to retrieve the repository subscribers count.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            self.ds.Repository.stargazerCount,
+            self.ds.Repository.watchers(first=0).select(self.ds.UserConnection.totalCount),
+        )
+        return self
+
+    def ask_security_policy(self) -> Self:
+        """Queue graphql task to retrieve whether the repository security policy is enabled.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(self.ds.Repository.isSecurityPolicyEnabled)
+        return self
+
+    def ask_security_advisories(
+        self, orderBy: Literal["created", "updated", "published"] = "published"
+    ) -> Self:
+        """Queue rest api task to retrieve the repository security advisories.
+        The security advisories are retrieved via the REST API, as the GraphQL API does not support
+
+        Args:
+          orderBy: Literal["created", "updated", "published"]: sort results by property (Default value = "published")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(lambda: self._get_security_advisories(orderBy))
+        return self
+
+    def _get_security_advisories(
+        self, orderBy: Literal["created", "updated", "published"] = "published"
+    ) -> dict:
+        """Get security advisories for the repository per rest api.
+
+        Args:
+          orderBy: Literal["created", "updated", "published"]: sort results by property (Default value = "published")
+
+        Returns:
+            dict: Dictionary containing the security advisories.
+        """
+        res: dict = {"advisories": []}
+        # use modified function as the original function does not support sorting
+        for x in get_security_advisories(self.gh.get_repo(f"{self.owner}/{self.name}"), orderBy):
+            # check if the advisory is older than the since date
+            past = get_past(self.since)
+            if not x._rawData["published_at"]:
+                # if the advisory has no published_at date, skip it
+                continue
+            if (
+                self.since
+                and past
+                and datetime.datetime.fromisoformat(x._rawData["published_at"]) < past
+            ):
+                break
+            res["advisories"].append(x._rawData)
+        return res
+
+    def ask_dependabot_alerts(self, after: typing.Optional[str] = None) -> Self:
+        """Queue graphql task to retrieve the dependabot alerts for the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        # it is apparently not possible to get the security advisories for a repo via graphql
+        # you can only get vulnerabilityAlerts for a Repo, which are only Dependatbot Alerts
+        # https://docs.github.com/en/graphql/reference/objects#repositoryvulnerabilityalert
+        # and the securityAdvisories Query https://docs.github.com/en/graphql/reference/queries#securityadvisories
+        # can not be filtered by repo
+        self.query.select(
+            self.ds.Repository.hasVulnerabilityAlertsEnabled,
+            self.ds.Repository.vulnerabilityAlerts(first=100, after=after).select(
+                self.ds.RepositoryVulnerabilityAlertConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.RepositoryVulnerabilityAlertConnection.nodes.select(
+                    self.ds.RepositoryVulnerabilityAlert.securityAdvisory.select(
+                        self.ds.SecurityAdvisory.ghsaId,
+                        self.ds.SecurityAdvisory.withdrawnAt,
+                        self.ds.SecurityAdvisory.publishedAt,
+                        self.ds.SecurityAdvisory.severity,
+                        self.ds.SecurityAdvisory.cwes(first=100).select(
+                            self.ds.CWEConnection.nodes.select(self.ds.CWE.cweId)
+                        ),
+                        self.ds.SecurityAdvisory.cvssSeverities.select(
+                            self.ds.CvssSeverities.cvssV3.select(
+                                self.ds.CVSS.score, self.ds.CVSS.vectorString
+                            ),
+                            self.ds.CvssSeverities.cvssV4.select(
+                                self.ds.CVSS.score, self.ds.CVSS.vectorString
+                            ),
+                        ),
+                        self.ds.SecurityAdvisory.identifiers.select(
+                            self.ds.SecurityAdvisoryIdentifier.type,
+                            self.ds.SecurityAdvisoryIdentifier.value,
+                        ),
+                        self.ds.SecurityAdvisory.vulnerabilities(first=100).select(
+                            self.ds.SecurityVulnerabilityConnection.nodes.select(
+                                self.ds.SecurityVulnerability.firstPatchedVersion.select(
+                                    self.ds.SecurityAdvisoryPackageVersion.identifier
+                                )
+                            )
+                        ),
+                    ),
+                    self.ds.RepositoryVulnerabilityAlert.state,
+                ),
+            ),
+        )
+
+        # queue method that checks if pagination is necessary
+        self.paginations.append(
+            simple_pagination("vulnerabilityAlerts", self.ask_security_advisories)
+        )
+
+        return self
+
+    def ask_dependencies_sbom(self) -> Self:
+        """Queue rest api task to retrieve the dependencies count of the repository via the SBOM information.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(self._get_dependencies_sbom)
+        return self
+
+    def ask_dependencies_crawl(self) -> Self:
+        """Queue crawl task to retrieve the dependencies count of the repository via the GitHub website.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.crawl.put(self._get_dependencies_crawl)
+        return self
+
+    def _get_dependencies_crawl(self) -> dict:
+        """Crawl and scrape the dependencies count of the repository from the GitHub website.
+
+        Returns:
+            dict: Dictionary containing the dependencies count.
+        """
+        res = 0
+        # scrape html via BeautifulSoup
+        soup = bs4.BeautifulSoup(
+            urllib.request.urlopen(
+                f"https://github.com/{self.owner}/{self.name}/network/dependencies"
+            ),
+            features="html5lib",
+        )
+        deps = None
+        try:
+            deps = (
+                soup.find("div", class_="Box")
+                .find("svg", class_="octicon-package")
+                .parent.text.strip()
+            )
+            if "No dependencies found" not in deps:
+                # if dependencies are found, get the number
+                res = int(deps.split(" ")[0].replace(",", ""))
+        except AttributeError:
+            # e.g. if repo is empty return 0
+            pass
+
+        return {"dependencies": {"count": int(res)}}
+
+    def ask_contributors(self) -> Self:
+        """Queue rest api task to retrieve the contributors of the repository.
+        Not available via GraphQL API.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(self._get_contributors)
+        return self
+
+    def _get_contributors(self) -> dict:
+        """Retrieves the contributors of the repository via the REST API.
+
+        Returns:
+            dict: Dictionary containing the contributors.
+        """
+        res: dict = {"users": []}
+        contributors = self.gh.get_repo(f"{self.owner}/{self.name}").get_contributors()
+        for cont in contributors:
+            res["users"].append({"login": cont.login, "contributions": cont.contributions})
+        return {"contributors": res}
+
+    def ask_community_profile(self) -> Self:
+        """Queue rest api task to retrieve the community profile of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(self._get_community_profile)
+        return self
+
+    def _get_community_profile(self) -> dict:
+        """Retrieves the community profile of the repository via the REST API.
+
+        Returns:
+            dict: Dictionary containing the community profile.
+        """
+        try:
+            # get community profile via REST API
+            # uses PyGithub requestJson as API call was not implemented in the library yet
+            status, headers, body = self.gh.requester.requestJson(
+                "GET",
+                f"/repos/{self.owner}/{self.name}/community/profile",
+            )
+        except requests.exceptions.RetryError as re:
+            # if all retries fail, try to get the data via the crawl method
+            if str(re.args[0].reason) == "too many 500 error responses":
+                try:
+                    return self._get_dependencies_crawl()
+                except urllib.error.HTTPError as httpe:
+                    # handle rate limit
+                    if httpe.status in [403, 429]:
+                        return handle_rate_limit(
+                            httpe.headers["x-ratelimit-reset"],
+                            self._get_dependencies_crawl,
+                        )
+                    else:
+                        # raise the error if it is not a rate limit error
+                        raise httpe
+
+        if status != 200:
+            self.console.log("unable to retrieve community profile")
+            return {"commmunity_profile": None}
+
+        body = json.loads(body)
+
+        return {"commmunity_profile": body}
+
+    def _get_dependencies_sbom(self) -> dict:
+        """Retrieves the dependencies count of the repository via the SBOM information per REST API call.
+
+        Returns:
+            dict: Dictionary containing the dependencies count.
+        """
+        try:
+            # get SBOM information via REST API
+            # uses PyGithub requestJson as API call was not implemented in the library yet
+            status, headers, body = self.gh.requester.requestJson(
+                "GET",
+                f"/repos/{self.owner}/{self.name}/dependency-graph/sbom",
+            )
+        except requests.exceptions.RetryError as re:
+            if str(re.args[0].reason) == "too many 500 error responses":
+                # if all retries fail, try to get the data via the crawl method
+                try:
+                    return self._get_dependencies_crawl()
+                except urllib.error.HTTPError as httpe:
+                    # handle rate limit
+                    if httpe.status in [403, 429]:
+                        return handle_rate_limit(
+                            httpe.headers["x-ratelimit-reset"],
+                            self._get_dependencies_crawl,
+                        )
+                    else:
+                        # raise the error if it is not a rate limit error
+                        raise httpe
+
+        # might result in status 500
+        # {
+        #     "message": "Failed to generate SBOM: Request timed out.",
+        #     "documentation_url": "https://docs.github.com/rest/dependency-graph/sboms#export-a-software-bill-of-materials-sbom-for-a-repository",
+        #     "status": "500",
+        # }
+
+        if status != 200:
+            self.console.log("unable to retrieve sbom")
+            return {"dependencies": {"count": None, "names": None}}
+
+        sbom = json.loads(body)["sbom"]
+        # get the dependencies from the SBOM
+        deps = set(
+            elem["relatedSpdxElement"]
+            for elem in sbom["relationships"]
+            if elem["relationshipType"] == "DEPENDS_ON"
+        )
+
+        return {"dependencies": {"count": len(deps), "names": list(deps)}}
+
+    def ask_dependencies(self, after: typing.Optional[str] = None) -> Self:
+        """Queue graphql task to retrieve the dependencies of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.s
+        """
+        self.query.select(
+            # Graphql queries for dependencyGraphManifests time out easily
+            # so we paginatie with a limit of 5, to make request faster
+            self.ds.Repository.dependencyGraphManifests(first=5, after=after).select(
+                self.ds.DependencyGraphManifestConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.DependencyGraphManifestConnection.edges.select(
+                    self.ds.DependencyGraphManifestEdge.cursor,
+                    self.ds.DependencyGraphManifestEdge.node.select(
+                        self.ds.DependencyGraphManifest.filename,
+                        self.ds.DependencyGraphManifest.dependenciesCount,
                         # without requesting edges, github returns always a dependencyCount of 0
-                        ds.DependencyGraphManifest.dependencies(first=0).select(
-                            ds.DependencyGraphDependencyConnection.totalCount
+                        self.ds.DependencyGraphManifest.dependencies(first=0).select(
+                            self.ds.DependencyGraphDependencyConnection.totalCount
                         ),
                     ),
                 ),
-                ds.DependencyGraphManifestConnection.totalCount,
+                self.ds.DependencyGraphManifestConnection.totalCount,
             )
         )
-        # for pagination, method: this method, key: dict key in result (to update)
-        self.post_graphql.append(
-            {
-                "method": self.ask_dependencies,
-                "key": lambda x: x["repository"]["dependencyGraphManifests"],
-            }
+
+        # queue method that checks if pagination is necessary
+        self.paginations.append(
+            simple_pagination("dependencyGraphManifests", self.ask_dependencies)
         )
+
         return self
 
-        # dependencyGraphManifests{nodes{filename,dependencies{totalCount},dependenciesCount}}
+    def __since_filter(
+        self,
+        selector: str | int | list[str | int],
+        since: datetime.datetime | datetime.timedelta | None = datetime.timedelta(days=30 * 6),
+    ) -> Callable:
+        """Returns a function that checks if the data is newer than since.
 
-    def ask_contributing(self) -> _Self:
-        """Checks possible contribution policy files."""
+        Args:
+          selector: str | int | list[str | int]: data selector to get iso date string in the data dict
+          since: datetime.datetime | datetime.timedelta | None: Include data newer than since (Default value = datetime.timedelta(days=30 * 6))
+          If sinc is datetime.timedelta, the function will check if the data is newer than now - since.
+
+        Returns:
+            Callable: Function that checks if the data is newer than since
+        """
+        if type(since) == datetime.datetime:
+            # if since is a datetime object, use it as is
+            past = since
+        elif type(since) == datetime.timedelta:
+            # if since is a timedelta object, use it to calculate the past date
+            past = datetime.datetime.now(datetime.UTC) - since
+        elif type(since) == type(None):
+            # if since is None, return a function that always returns True
+            # (i.e. no filter)
+            return lambda x: True
+        else:
+            raise TypeError("since not of type datetime.datetime, datetime.timedelta or None")
+
+        def func(data: dict) -> bool:
+            """
+            Returns True if the data is newer than since.
+
+            Args:
+              data: dict: data dict to check
+
+            Returns:
+                bool: True if the data is newer than since
+            """
+            if type(selector) == str:
+                # if selector is a string, get the value from repository
+                selection = data["repository"][selector]
+            elif type(selector) == list:
+                # if selector is a list, get the value from the data dict
+                # by traversing the dict
+                selection = data
+                for elem in selector:
+                    selection = selection[elem]
+            return datetime.datetime.fromisoformat(selection) > past
+
+        return func
+
+    def ask_contributing(self) -> Self:
+        """Checks possible contribution policy files.
+        The function checks for the following files:
+        - CONTRIBUTING.md
+        - CONTRIBUTING.txt
+        - CONTRIBUTING
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         blob_fragment = DSLInlineFragment()
-        blob_fragment.on(ds.Blob)
-        blob_fragment.select(ds.Blob.oid, ds.Blob.byteSize)
+        blob_fragment.on(self.ds.Blob)
+        blob_fragment.select(self.ds.Blob.oid, self.ds.Blob.byteSize)
         self.query.select(
-            ds.Repository.object(expression="HEAD:CONTRIBUTING.md")
+            self.ds.Repository.object(expression="HEAD:CONTRIBUTING.md")
             .select(blob_fragment)
             .alias("contributing_md"),
-            ds.Repository.object(expression="HEAD:CONTRIBUTING.txt")
+            self.ds.Repository.object(expression="HEAD:CONTRIBUTING.txt")
             .select(blob_fragment)
             .alias("contributing_txt"),
-            ds.Repository.object(expression="HEAD:CONTRIBUTING")
+            self.ds.Repository.object(expression="HEAD:CONTRIBUTING")
             .select(blob_fragment)
             .alias("contributing_raw"),
         )
         return self
 
     def ask_feature_requests(
-        self, states=["CLOSED", "OPEN"], alias="feature_requests"
-    ) -> _Self:
+        self,
+        states: list[Literal["CLOSED", "OPEN"]] = ["CLOSED", "OPEN"],
+        alias: str = "feature_requests",
+        orderBy: IssueOrder = IssueOrder("DESC", "CREATED_AT"),
+    ) -> Self:
+        """Queue graphql task to retrieve the feature requests of the repository.
+
+        Args:
+          states: list[Literal["CLOSED", "OPEN"]]: Lisst of issue states. (Default value = ["CLOSED")
+          alias: str: Alias to use in resulting dict. (Default value = "feature_requests")
+          orderBy: IssueOrder: How to order results. (Default value = IssueOrder("DESC"), "CREATED_AT"):
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         self.query.select(
-            ds.Repository.issues(
+            self.ds.Repository.issues(
                 first=0,
                 states=states,
                 filterBy={
@@ -150,22 +588,271 @@ class Repository(Request):
                         "feature-request",
                     ]
                 },
+                orderBy=asdict(orderBy),
             )
-            .select(ds.IssueConnection.totalCount)
+            .select(self.ds.IssueConnection.totalCount)
             .alias(alias)
         )
         return self
 
-    def ask_closed_feature_requests(self) -> _Self:
-        return self.ask_feature_requests(
-            states="CLOSED", alias="closed_feature_requests"
+    def ask_closed_feature_requests(self) -> Self:
+        """Queue graphql task to retrieve the closed feature requests of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        return self.ask_feature_requests(states=["CLOSED"], alias="closed_feature_requests")
+
+    def ask_dependents(self) -> Self:
+        """Queue crawl task to retrieve the dependents of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.crawl.put(self._get_dependents)
+        return self
+
+    def ask_releases(self, after: typing.Optional[str] = None) -> Self:
+        """Queue graphql task to retrieve the releases of the repository.
+        Warning: Github API provides a totalCount of 1000 at max (same when paginating nodes).
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination. (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        raise DeprecationWarning(
+            "Github API provides a totalCount of 1000 at max (same when paginating nodes)"
+        )
+        # tested with
+        # Repository(owner="vercel", name="next.js")
+        # Repository(owner="vercel", name="vercel")
+        self.query.select(
+            self.ds.Repository.releases(first=100, after=after).select(
+                self.ds.ReleaseConnection.totalCount,
+                self.ds.ReleaseConnection.edges.select(self.ds.ReleaseEdge.cursor),
+            )
+        )
+        # for pagination, method: this method, key: dict key in result (to update)
+        self.post_graphql.append(
+            {
+                "method": self.ask_releases,
+                "key": lambda x: x["repository"]["releases"],
+            }
+        )
+        return self
+
+    def ask_releases_crawl(self) -> Self:
+        """Queue crawl task to retrieve the releases of the repository via the Github website.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.crawl.put(self._get_release_count)
+        return self
+
+    def _get_release_count(self) -> dict:
+        """Retrieves the release count of the repository via the Github website.
+
+        Returns:
+            dict: Dictionary containing the release count.
+        """
+        response = urllib.request.urlopen(
+            f"https://github.com/{quote(self.owner)}/{quote(self.name)}"
+        )
+        # get owner and name from the result url (github may redirect e.g. if owner name changed)
+        # for finding the correct a tag, we need the current owner and name
+        owner, name = urllib.parse.urlparse(response.geturl()).path.split("/")[1:3]
+        release_count = 0
+        try:
+            # get the number of releases from the webpage
+            release_count = int(
+                bs4.BeautifulSoup(
+                    response.read(),
+                    features="html5lib",
+                )
+                .find("a", href=f"/{quote(owner)}/{quote(name)}/releases")
+                .find("span", class_="Counter")
+                .text.replace(",", "")
+                .strip()
+            )
+        except AttributeError:
+            self.console.log("did not find release count")
+            pass
+        return {"releases": release_count}
+
+    def ask_issue_comments(
+        self,
+        number: str | int,
+        after: typing.Optional[str] = None,
+        orderBy: IssueCommentOrder = IssueCommentOrder("DESC", "UPDATED_AT"),
+    ) -> Self:
+        """Queue graphql task to retrieve the comments of an issue of the repository.
+
+        Args:
+          number: str | int: Issue number
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          orderBy: IssueCommentOrder: Sort order for the issue comments (Default value = IssueCommentOrder("DESC"), "UPDATED_AT")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            self.ds.Repository.issue(number=number)
+            .alias(f"issue{number}")
+            .select(
+                self.ds.Issue.createdAt,
+                self.ds.Issue.comments(first=100, after=after, orderBy=asdict(orderBy)).select(
+                    self.ds.IssueCommentConnection.totalCount,
+                    self.ds.IssueCommentConnection.pageInfo.select(
+                        self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                    ),
+                    self.ds.IssueCommentConnection.edges.select(
+                        self.ds.IssueCommentEdge.cursor,
+                        self.ds.IssueCommentEdge.node.select(
+                            self.ds.IssueComment.id,
+                            self.ds.IssueComment.createdAt,
+                            self.ds.IssueComment.updatedAt,
+                        ),
+                    ),
+                ),
+            )
         )
 
-    def ask_dependents(self) -> _Self:
-        self.crawl.append(self._get_dependents)
+        def pagination(data: dict) -> list[Callable] | Callable | None:
+            """Provides a function that checks if pagination is necessary. Check if comments are older than since.
+
+            Args:
+              data: dict: repository data dict to check
+
+            Returns:
+                list[Callable] | Callable | None: List of functions that checks if pagination is necessary.
+                None if no pagination is necessary.
+            """
+            if data["repository"][f"issue{number}"]["comments"]["pageInfo"]["hasNextPage"]:
+                # check if the last comment is older than since
+                if self.__since_filter(
+                    ["repository", f"issue{number}", "comments", "edges", -1, "node", "updatedAt"],
+                    since=self.since,
+                )(data):
+                    return [
+                        # get next page of comments
+                        lambda: self.ask_issue_comments(
+                            number,
+                            after=data["repository"][f"issue{number}"]["comments"]["pageInfo"][
+                                "endCursor"
+                            ],
+                        )
+                    ]
+            return None
+
+        # add pagination function to the list of paginations
+        self.paginations.append(pagination)
+
+        return self
+
+    def ask_issues(
+        self,
+        after: typing.Optional[str] = None,
+        orderBy: IssueOrder = IssueOrder("DESC", "CREATED_AT"),
+    ) -> Self:
+        """Queue graphql task to retrieve the issues of the repository.
+        Also queues a pagination function retrieving the comments of the issues.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          orderBy: IssueOrder: Sort order of issues (Default value = IssueOrder("DESC"), "CREATED_AT")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            self.ds.Repository.issues(first=100, after=after, orderBy=asdict(orderBy)).select(
+                self.ds.IssueConnection.totalCount,
+                self.ds.IssueConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.IssueConnection.edges.select(
+                    self.ds.IssueEdge.cursor,
+                    self.ds.IssueEdge.node.select(
+                        self.ds.Issue.closedAt,
+                        self.ds.Issue.updatedAt,
+                        self.ds.Issue.createdAt,
+                        self.ds.Issue.number,
+                        self.ds.Issue.state,
+                        self.ds.Issue.closedByPullRequestsReferences(first=0).select(
+                            self.ds.PullRequestConnection.totalCount
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        def pagination(data: dict) -> list[Callable] | None:
+            """Returns pagination functions for the issues comments and issues.
+
+            Args:
+              data: dict: repository data dict to check
+
+            Returns:
+                list[Callable] | None: List of functions that checks if pagination is necessary.
+                None if no pagination is necessary.
+            """
+            # stores the pagination functions
+            res = []
+            cutoff = 0
+            # get the last issue cursor
+            for i, elem in enumerate(data["repository"]["issues"]["edges"]):
+                # if the cursor is the same as the after cursor, set cutoff to the index
+                if elem["cursor"] == after:
+                    cutoff = i + 1
+                    break
+
+            def _get_func(num) -> Callable:
+                """Returns a function that retrieves the comments of an issue.
+                The function is created in a closure to avoid the late binding problem.
+
+                Args:
+                  num:  int: Issue number
+
+                Returns:
+                    Callable: Function that queues the retrieval of the comments of the issue
+                """
+                # copy by value
+                return lambda: self.ask_issue_comments(str(num))
+
+            # get comment retrieval functions for the newly retrieved issues
+            tmp = [
+                _get_func(x["node"]["number"])
+                for x in data["repository"]["issues"]["edges"][cutoff:]
+            ]
+
+            res.extend(tmp)
+
+            # check if pagination of issues is necessary
+            if data["repository"]["issues"]["pageInfo"]["hasNextPage"]:
+                if self.__since_filter(
+                    ["repository", "issues", "edges", -1, "node", "createdAt"], since=self.since
+                )(data):
+                    res.append(
+                        lambda: self.ask_issues(
+                            after=data["repository"]["issues"]["pageInfo"]["endCursor"]
+                        )
+                    )
+            return res
+
+        # add pagination function to the list of paginations
+        self.paginations.append(pagination)
+
         return self
 
     def _get_dependents(self) -> dict:
+        """Retrieves the dependents count of the repository via the Github website.
+
+        Returns:
+            dict: Dictionary containing the dependents count.
+        """
         response = urllib.request.urlopen(
             f"https://github.com/{quote(self.owner)}/{quote(self.name)}/network/dependents?dependent_type=REPOSITORY"
         )
@@ -173,18 +860,18 @@ class Repository(Request):
         # for finding the correct a tag, we need the current owner and name
         owner, name = urllib.parse.urlparse(response.geturl()).path.split("/")[1:3]
         # get the number of total dependents from webpage
-        return {
-            "dependents": int(
-                bs4.BeautifulSoup(
-                    response.read(),
-                    features="html5lib",
-                )
-                .find(
+        res = 0
+        soup = bs4.BeautifulSoup(
+            response.read(),
+            features="html5lib",
+        )
+        try:
+            # get the number of dependents from the webpage
+            deps = (
+                soup.find(
                     "a",
                     href=lambda href: href
-                    and href.startswith(
-                        f"/{quote(owner)}/{quote(name)}/network/dependents"
-                    )
+                    and href.startswith(f"/{quote(owner)}/{quote(name)}/network/dependents")
                     and "dependent_type=REPOSITORY" in href,
                 )
                 .get_text()
@@ -193,30 +880,95 @@ class Repository(Request):
                 .strip()
                 .replace(",", "")
             )
-        }
+            res = int(deps)
+        except AttributeError:
+            pass
 
-    def ask_pull_requests(self, after=None) -> _Self:
+        return {"dependents": res}
+
+    def ask_forks(
+        self,
+        after: typing.Optional[str] = None,
+        orderBy: RepositoryOrder = RepositoryOrder("DESC", "CREATED_AT"),
+    ) -> Self:
+        """Queues a graphql task to retrieve the forks of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          orderBy: RepositoryOrder: Sort order (Default value = RepositoryOrder("DESC"), "CREATED_AT")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         self.query.select(
-            ds.Repository.pullRequests(first=100, states="MERGED", after=after).select(
-                ds.PullRequestConnection.totalCount,
-                ds.PullRequestConnection.edges.select(
-                    ds.PullRequestEdge.cursor,
-                    ds.PullRequestEdge.node.select(
-                        ds.PullRequest.mergedAt, ds.PullRequest.createdAt
+            self.ds.Repository.forks(first=100, after=after, orderBy=asdict(orderBy)).select(
+                self.ds.RepositoryConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.RepositoryConnection.nodes.select(
+                    self.ds.Repository.created_at, self.ds.Repository.id
+                ),
+            )
+        )
+
+        # TODO add pagination?
+        return self
+
+    def ask_pull_requests(
+        self,
+        after: typing.Optional[str] = None,
+        orderBy: PullRequestOrder = PullRequestOrder("DESC", "CREATED_AT"),
+    ) -> Self:
+        """Queue graphql task to retrieve the pull requests of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          orderBy: PullRequestOrder: Sort order (Default value = PullRequestOrder("DESC"), "CREATED_AT")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            self.ds.Repository.pullRequests(first=100, after=after, orderBy=asdict(orderBy)).select(
+                self.ds.PullRequestConnection.totalCount,
+                self.ds.PullRequestConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.PullRequestConnection.edges.select(
+                    self.ds.PullRequestEdge.cursor,
+                    self.ds.PullRequestEdge.node.select(
+                        self.ds.PullRequest.mergedAt,
+                        self.ds.PullRequest.createdAt,
+                        self.ds.PullRequest.closedAt,
+                        self.ds.PullRequest.state,
                     ),
                 ),
             )
         )
-        # for pagination, method: this method, key: dict key in result (to update)
-        self.post_graphql.append(
-            {
-                "method": self.ask_pull_requests,
-                "key": lambda x: x["repository"]["pullRequests"],
-            }
+
+        # queue method that checks if pagination is necessary
+        # limit to pull requests that are newer than since
+        self.paginations.append(
+            simple_pagination(
+                "pullRequests",
+                self.ask_pull_requests,
+                filters=[
+                    self.__since_filter(
+                        ["repository", "pullRequests", "edges", -1, "node", "createdAt"],
+                        since=self.since,
+                    )
+                ],
+            )
         )
+
         return self
 
-    def ask_readme(self) -> _Self:
+    def ask_readme(self) -> Self:
+        """Queue graphql task to retrieve the README file of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
         # README file endings (not official)
         # https://github.com/joelparkerhenderson/github-special-files-and-paths#contributing
         # paths = [".github", "", "docs"]
@@ -228,11 +980,11 @@ class Repository(Request):
         # rest api alternative - gives preferred README
         # https://docs.github.com/en/rest/repos/contents?apiVersion=2022-11-28#get-a-repository-readme
         blob_fragment = DSLInlineFragment()
-        blob_fragment.on(ds.Blob)
-        blob_fragment.select(ds.Blob.text)
+        blob_fragment.on(self.ds.Blob)
+        blob_fragment.select(self.ds.Blob.text)
         self.query.select(
             *(
-                ds.Repository.object(expression=f"HEAD:{readme}")
+                self.ds.Repository.object(expression=f"HEAD:{readme}")
                 .select(blob_fragment)
                 .alias(utils.get_readme_index(readme))
                 for readme in constants.readmes
@@ -240,28 +992,48 @@ class Repository(Request):
         )
         return self
 
-    def ask_workflow_runs(self) -> _Self:
-        self.rest.append(self._get_workflow_runs)
+    def ask_workflow_runs(self) -> Self:
+        """Queue rest api task to retrieve the workflow runs of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(self._get_workflow_runs)
         return self
 
-    def ask_workflows(self) -> _Self:
-        self.rest.append(self._get_workflows)
+    def ask_workflows(self) -> Self:
+        """Queue rest api task to retrieve the workflows of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.rest.put(self._get_workflows)
         return self
 
-    def ask_description(self) -> _Self:
-        self.query.select(ds.Repository.description)
+    def ask_description(self) -> Self:
+        """Queue graphql task to retrieve the description of the repository.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(self.ds.Repository.description)
         return self
 
     def _get_workflows(self) -> dict:
-        # get workflows via REST api (not available via graphql)
-        wfs = gh.get_repo(f"{self.owner}/{self.name}").get_workflows()
-        res = []
-        old_per_page = gh.per_page
-        gh.per_page = 5
+        """Retrieves the workflows of the repository via the REST API.
 
-        for wf in track(
-            wfs, description="Retrieving status of workflows", total=wfs.totalCount
-        ):
+        Returns:
+            dict: Dictionary containing the workflows.
+        """
+        # get workflows via REST api (not available via graphql)
+        wfs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflows()
+        res = []
+        # store previous pagination size value
+        old_per_page = self.gh.per_page
+        # set per_page to 5 to avoid timeouts
+        self.gh.per_page = 5
+
+        for wf in track(wfs, description="Retrieving status of workflows", total=wfs.totalCount):
             for run in wf.get_runs():
                 # only check finished workflow runs
                 if run.conclusion:
@@ -289,16 +1061,21 @@ class Repository(Request):
                         }
                     )
                     break
-        gh.per_page = old_per_page
+        # revert pagination size to original value
+        self.gh.per_page = old_per_page
         return {"workflows": res}
 
     def _get_workflow_runs(self) -> dict:
+        """Retrieves the workflow runs of the repository via the REST API.
+
+        Returns:
+            dict: Dictionary containing the workflow runs.
+        """
         res = []
         count = 1
         with self.console.status("Getting workflow runs..."):
-            runs = gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs(
-                status="failure"
-            )
+            # runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs(status="failure")
+            runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs()
             self.console.log(f"total runs: {runs.totalCount}")
             for wf in runs:
                 res.append(
@@ -316,193 +1093,347 @@ class Repository(Request):
                 if count % 10 == 0:
                     self.console.log(f"workflow {count}")
                 count += 1
-        return res
+        return {"workflow_runs": res}
 
-    def handle_rate_limit(self, timestamp, func):
-        """Helper function for checking rate limit and sleeping for the specified time."""
-        sleep_time = 60
-        if timestamp:
-            sleep_time = int(timestamp) - int(time.time())
-        # add a little grace period
-        sleep_time += 5
-        self.console.log("rate limit exceeded - sleeping for " + str(sleep_time))
-        time.sleep(sleep_time)
-        # if rate limit is still exceed for whatever reason, crash and let the task queue retry later
-        return func()
+    def ask_commits_clone(self) -> Self:
+        """Queue task that clones the git repository and retrieves the commits.
 
-    def execute(self, rate_limit=False, verbose=False) -> dict:
-        # execute first graphql query (paginations are done later), execute things to crawl from website and do rest api calls
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.clone.put(self._get_commits_clone)
+        return self
+
+    def _get_commits_clone(self) -> dict:
+        """Retrieves the commits of the locally cloned repository.
+
+        Returns:
+            dict: Dictionary containing the commits.
+        """
+        res = []
+        # get past date
+        past = get_past(self.since)
+
+        with self.console.status("Getting commits..."):
+            # get commits from the local repository
+            for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
+                # calculate the commit stats
+                stat = commit.stats
+                # check if the commit is older than the past date
+                if past and commit.committed_datetime < past:
+                    break
+                res.append(
+                    {
+                        "sha": commit.hexsha,
+                        "author": {"name": commit.author.name, "email": commit.author.email},
+                        "committer": {"name": commit.committer.name, "email": commit.committer.email},
+                        "authored_iso": commit.authored_datetime.isoformat(),
+                        "committed_iso": commit.committed_datetime.isoformat(),
+                        "message": commit.message,
+                        "has_signature": bool(commit.gpgsig),
+                        "insertions": stat.total["insertions"],
+                        "deletions": stat.total["deletions"],
+                        "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
+                        "files": list(stat.files.keys()),
+                    }
+                )
+                if i % 100 == 0:
+                    self.console.log(f"Currently at commit # {i}")
+        return {"commits": res}
+
+    def ask_commits(self, after: typing.Optional[str] = None, since: IsoDate | None = None) -> Self:
+        """Queue graphql task to retrieve the commits of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          since: IsoDate | None: Retrieve data newer than sice (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        # (datetime.date.today()-datetime.timedelta(days=30*6)).isoformat()
+        self.query.select(
+            self.ds.Repository.defaultBranchRef.select(
+                self.ds.Ref.target.alias("last_commit").select(
+                    DSLInlineFragment()
+                    .on(self.ds.Commit)
+                    .select(
+                        self.ds.Commit.history(first=100, after=after, since=since).select(
+                            self.ds.CommitHistoryConnection.pageInfo.select(
+                                self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                            ),
+                            self.ds.CommitHistoryConnection.edges.select(
+                                self.ds.CommitEdge.cursor,
+                                self.ds.CommitEdge.node.select(
+                                    self.ds.Commit.authoredByCommitter,
+                                    self.ds.Commit.oid,
+                                    self.ds.Commit.authoredDate,
+                                    self.ds.Commit.signature.select(
+                                        self.ds.GitSignature.isValid,
+                                        self.ds.GitSignature.verifiedAt,
+                                        self.ds.GitSignature.state,
+                                    ),
+                                    self.ds.Commit.author.select(
+                                        self.ds.GitActor.date,
+                                        self.ds.GitActor.email,
+                                        self.ds.GitActor.name,
+                                        self.ds.GitActor.user.select(
+                                            self.ds.User.login, self.ds.User.id
+                                        ),
+                                    ),
+                                    self.ds.Commit.committer.select(
+                                        self.ds.GitActor.date,
+                                        self.ds.GitActor.email,
+                                        self.ds.GitActor.name,
+                                        self.ds.GitActor.user.select(
+                                            self.ds.User.login, self.ds.User.id
+                                        ),
+                                    ),
+                                    self.ds.Commit.additions,
+                                    self.ds.Commit.deletions,
+                                    self.ds.Commit.message,
+                                    self.ds.Commit.messageBody,
+                                ),
+                            ),
+                        )
+                    )
+                )
+            )
+        )
+
+        def pagination(data: dict) -> list[Callable] | None:
+            """Returns a function that checks if pagination is necessary.
+            Also queues rest api functions for retrieving the commit details.
+
+            Args:
+              data: dict: repository data dict to check.
+
+            Returns:
+                list[Callable] | None: List of functions that checks if pagination is necessary.
+                None if no pagination is necessary.
+            """
+            res = []
+            cutoff = 0
+            # get the last commit cursor
+            # get new items to retrieve commit details for
+            for i, elem in enumerate(
+                data["repository"]["defaultBranchRef"]["last_commit"]["history"]["edges"]
+            ):
+                # if the cursor is the same as the after cursor, set cutoff to the index
+                if elem["cursor"] == after:
+                    cutoff = i + 1
+                    break
+
+            def _get_func(num: int) -> Callable:
+                """Returns a function that retrieves the commit details.
+                The function is created in a closure to avoid the late binding problem.
+
+                Args:
+                  num: int: Commit number
+
+                Returns:
+                    Callable: Function that queues the retrieval of the commit details
+                """
+                # copy by value
+                return lambda: self._get_commit_details(str(num))
+
+            # get commit retrieval functions for the newly retrieved commits
+            tmp = [
+                _get_func(x["node"]["oid"])
+                for x in data["repository"]["defaultBranchRef"]["last_commit"]["history"]["edges"][
+                    cutoff:
+                ]
+            ]
+
+            # queue the commit details rest api retrieval functions
+            for elem in tmp:
+                self.rest.put(elem)
+
+            # check if pagination of commits is necessary
+            if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
+                "hasNextPage"
+            ]:
+                res.append(
+                    lambda: self.ask_commits(
+                        after=data["repository"]["defaultBranchRef"]["last_commit"]["history"][
+                            "pageInfo"
+                        ]["endCursor"]
+                    )
+                )
+            return res
+
+        # add pagination function to the list of paginations
+        self.paginations.append(pagination)
+
+        return self
+
+    def ask_commit_files(self) -> Self:
+        """Queue task that retrieves the commit files of the repository from the local clone.
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.clone.put(self._get_commit_files)
+        return self
+
+    def _get_commit_files(self) -> dict:
+        """Retrieves list of files for each commit from the local clone.
+
+        Returns:
+            dict: Dictionary containing the commit files.
+        """
+        files = {
+            commit.hexsha: list(commit.stats.files.keys())
+            for commit in self.repo.iter_commits(self.repo.active_branch.name)
+        }
+        return {"commits": {"files": files}}
+
+    def ask_commit_details(self, sha: str) -> Self:
+        """Qeues a rest api task to retrieve the commit details of the repository.
+        The commit details are not available via the GraphQL API.
+
+        Args:
+          sha: str: Commit sha
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        # as we need to make a request for every commit anyway, we could collect the commit data using this request instead of in the graphql query
+        # that would save some nodes
+        self.rest.put(lambda: self._get_commit_details(sha))
+        return self
+
+    def _get_commit_details(self, sha: str) -> dict:
+        """Retrieves the commit details of the repository via the REST API.
+        The commit details are not available via the GraphQL API.
+        Returns the files per commit.
+
+        Args:
+          sha: str: Commit sha
+
+        Returns:
+            dict: Dictionary containing the commit details.
+        """
+        data = self.gh.get_repo(f"{self.owner}/{self.name}").get_commit(sha)._rawData
+        return {f"commit_{sha}": [x["filename"] for x in data["files"]]}
+
+    def ask_branches(self, after: typing.Optional[str] = None) -> Self:
+        """Queues graphql task to retrieve the branches of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            # get branches via refPrefix
+            self.ds.Repository.refs(first=100, refPrefix="refs/heads/", after=after)
+            .alias("branches")
+            .select(
+                self.ds.RefConnection.totalCount,
+                self.ds.RefConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.RefConnection.edges.select(
+                    self.ds.RefEdge.cursor,
+                    self.ds.RefEdge.node.alias("branch").select(
+                        self.ds.Ref.name,
+                        self.ds.Ref.target.alias("commit").select(
+                            DSLInlineFragment()
+                            .on(self.ds.Commit)
+                            .select(
+                                self.ds.Commit.author.select(self.ds.GitActor.date),
+                                self.ds.Commit.committedDate,
+                            )
+                        ),
+                        self.ds.Ref.associatedPullRequests(
+                            first=100, orderBy=asdict(PullRequestOrder("DESC", "CREATED_AT"))
+                        ).select(
+                            self.ds.PullRequestConnection.nodes.select(self.ds.PullRequest.state)
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        # queue method that checks if pagination is necessary
+        self.paginations.append(simple_pagination("branches", self.ask_branches))
+        return self
+
+    @override
+    def execute(self, rate_limit: bool = False, verbose: bool = False) -> dict:
+        """Executes the queued tasks and retrieves the data from the repository.
+        This method uses multithreading to execute the tasks in parallel.
+        Each type of request (GraphQL, REST, Crawl, Clone) is executed in a separate thread.
+        The results are merged into a single dictionary and returned.
+        The method also handles pagination and rate limiting.
+
+        Args:
+          rate_limit: bool: whether to check rate limit (Default value = False)
+          verbose: bool: verbose output (Default value = False)
+
+        Returns:
+            dict: Dictionary containing the results of the queries.
+        """
         if verbose:
             self.console.log("retrieving Data")
-        # ThreadPoolExecutor
-        # do blocking requests in "parallel"
-        # graphql page 1, crawling and rest api calls are executed in "parallel"
-        tpe = ThreadPoolExecutor(3)
-        graph = tpe.submit(super().execute, rate_limit)
-        crawl = tpe.submit(self._execute_crawl)
-        rest = tpe.submit(self._execute_rest)
-        tpe.shutdown()
 
-        # get graphql page 1 result from thread and check rate limit
-        gres = {}
-        try:
-            gres = graph.result()
-        except gql.transport.exceptions.TransportServerError as tse:
-            if tse.code in [403, 429]:
-                gres = self.handle_rate_limit(
-                    transport.response_headers.get("x-ratelimit-reset"),
-                    lambda: super().execute(rate_limit),
-                )
-            else:
-                raise tse
-        except gql.transport.exceptions.TransportQueryError as tqe:
-            # handling this error is not necessary for the paginations as the connection uses a session
-            # so if the Github loadbalancer assigns us to a host that can process our request
-            # the paginations will also work as they are processed by the same host
-            if (
-                len(tqe.errors) == 1
-                and tqe.errors[0]["path"] == ["repository", "dependencyGraphManifests"]
-                and tqe.errors[0]["message"] == "timedout"
-            ):
-                for i in track(
-                    range(20),
-                    description="Retrying due to timedout dependencyGraphManifests",
-                ):
-                    try:
-                        gres = super().execute(rate_limit)
-                        break
-                    except gql.transport.exceptions.TransportQueryError as tqe_inner:
-                        if (
-                            len(tqe_inner.errors) == 1
-                            and tqe_inner.errors[0]["path"]
-                            == ["repository", "dependencyGraphManifests"]
-                            and tqe_inner.errors[0]["message"] == "timedout"
-                        ):
-                            # self.console.log("timedout dependencyGraphManifests")
-                            pass
-                        else:
-                            raise tqe_inner
-                else:
-                    raise tqe
-            else:
-                raise tqe
+        with ThreadPoolExecutor(4) as tpe:
+            # calls GraphRequest.execute
+            graph = tpe.submit(super().execute, rate_limit)
+            # calls RestRequest.execute (starts searching in MRO right of speicified type GraphRequest)
+            rest = tpe.submit(super(GraphRequest, self).execute, rate_limit)
+            # # calls CrawlRequest.execute(starts searching in MRO right of speicified type RestRequest)
+            crawl = tpe.submit(super(RestRequest, self).execute)
+            # # calls CloneRequest.execute(starts searching in MRO right of speicified type CrawlRequest)
+            clone = tpe.submit(super(CrawlRequest, self).execute)
+            # https://stackoverflow.com/questions/45704243/value-of-c-pytime-t-in-python
+            # wait for all threads to finish
+            try:
+                # wait for graphql thread to finish
+                gres = graph.result(timeout=threading.TIMEOUT_MAX)
+                # close rest queue and wait for rest thread to finish
+                self.rest.shutdown()  # type: ignore[attr-defined]
+                rres = rest.result(timeout=threading.TIMEOUT_MAX)
+                # close crawl queue and wait for crawl thread to finish
+                self.crawl.shutdown()  # type: ignore[attr-defined]
+                cres = crawl.result(timeout=threading.TIMEOUT_MAX)
+                # close clone queue and wait for clone thread to finish
+                self.clone.shutdown()  # type: ignore[attr-defined]
+                cloneres = clone.result(timeout=threading.TIMEOUT_MAX)
+            except Exception as e:
+                print(e)
+                # close queues on exception
+                self.rest.shutdown()  # type: ignore[attr-defined]
+                self.crawl.shutdown()  # type: ignore[attr-defined]
+                self.clone.shutdown()  # type: ignore[attr-defined]
+                # raise exception
+                raise e
 
-        # get crawling webpage result from thread and check rate limit
-        cres = {}
-        try:
-            cres = crawl.result()
-        except urllib.error.HTTPError as httpe:
-            if httpe.status in [403, 429]:
-                cres = self.handle_rate_limit(
-                    httpe.headers["x-ratelimit-reset"],
-                    self._execute_crawl,
-                )
-            else:
-                raise httpe
+        # merge the results of the different threads
+        return merge_dicts(gres, cres, rres, cloneres)
 
-        # get rest api result from thread and check rate limit
-        rres = {}
-        try:
-            rres = rest.result()
-        except github.RateLimitExceededException as rlee:
-            if rlee.status in [403, 429]:
-                rres = self.handle_rate_limit(
-                    rlee.headers["x-ratelimit-reset"],
-                    self._execute_rest,
-                )
-            else:
-                raise rlee
+    # def _execute_crawl(self) -> dict:
+    #     """ """
+    #     return self._execute_sequence(self.crawl)
 
-        # merge all results
-        self.result = gres | cres | rres
-        count = 1
+    # def _execute_rest(self) -> dict:
+    #     """ """
+    #     return self._execute_sequence(self.rest)
 
-        # handle graphql pagination
-        with self.console.status("processing paginations ..."):
-            # handle graphql queries that might require pagination
-            while self.post_graphql:
-                post_graphql = self.post_graphql
-                self.post_graphql = []
-                # reset query so that it can be used for pagination in cycles (e.g. page 1 of all things that paginate, then page 2 and so on)
-                self._reset_query()
-                for entry in post_graphql:
-                    # do not execute queries if pagination is not required (all results transmitted in initial query)
-                    # length > 0, because github gql returns totalCount: 1 when the list of edges is empty
-                    if (
-                        entry["key"](self.result)["totalCount"]
-                        > (length := len(entry["key"](self.result)["edges"]))
-                        and length > 0
-                    ):
-                        entry["method"](
-                            after=entry["key"](self.result)["edges"][-1]["cursor"]
-                        )
-                try:
-                    # execute pagination query
-                    tmp = super().execute(rate_limit)
-                except GraphQLError:
-                    # Break if query is empty (local grapqhl error)
-                    break
-                except gql.transport.exceptions.TransportServerError as tse:
-                    # sleep if graphql rate limit exceeded
-                    if tse.code in [403, 429]:
-                        gres = self.handle_rate_limit(
-                            transport.response_headers.get("x-ratelimit-reset"),
-                            lambda: super().execute(rate_limit),
-                        )
-                    else:
-                        raise tse
+    # def _execute_sequence(self, seq: list[Callable]) -> dict:
+    #     """
 
-                if not tmp:
-                    # result of pagination empty
-                    break
+    #     Args:
+    #       seq: list[Callable]:
+    #       seq: list[Callable]:
 
-                # merge new edges into results
-                for elem in tmp["repository"]:
-                    # update totalCount in case it changed
-                    self.result["repository"][elem]["totalCount"] = tmp["repository"][
-                        elem
-                    ]["totalCount"]
-                    # merge edges
-                    self.result["repository"][elem]["edges"].extend(
-                        tmp["repository"][elem]["edges"]
-                    )
+    #     Returns:
 
-                # merge rate limit stats (e.g. sum up costs)
-                if rate_limit:
-                    self.result["rateLimit"]["cost"] += tmp["rateLimit"]["cost"]
-                    self.result["rateLimit"]["remaining"] = tmp["rateLimit"][
-                        "remaining"
-                    ]
-                    self.result["rateLimit"]["resetAt"] = tmp["rateLimit"]["resetAt"]
-                    self.result["rateLimit"]["nodeCount"] += tmp["rateLimit"][
-                        "nodeCount"
-                    ]
-                    self.result["rateLimit"]["used"] = tmp["rateLimit"]["used"]
-
-                # checks if something returned 0 elements and removes the followup query if necessary
-                # this is needed, because Github returns a wrong totalCount for dependencyManifestGraphs
-                # (e.g. tested with laurent22/Joplin which returned totalCount==81 whereas the real count was 80)
-                for i, entry in enumerate(self.post_graphql):
-                    # tmp contained not elements
-                    if not len(entry["key"](tmp)["edges"]) or entry["key"](self.result)[
-                        "totalCount"
-                    ] <= len(entry["key"](self.result)["edges"]):
-                        self.post_graphql.pop(i)
-
-                if verbose:
-                    self.console.log("page" + str(count))
-                count += 1
-        return self.result
-
-    def _execute_crawl(self) -> dict:
-        return self._execute_sequence(self.crawl)
-
-    def _execute_rest(self) -> dict:
-        return self._execute_sequence(self.rest)
-
-    def _execute_sequence(self, seq) -> dict:
-        rest_res = [elem() for elem in seq]
-        res = {}
-        for elem in rest_res:
-            res.update(elem)
-        return res
+    #     """
+    #     rest_res = [elem() for elem in seq]
+    #     res = {}
+    #     for elem in rest_res:
+    #         res.update(elem)
+    #     return res
