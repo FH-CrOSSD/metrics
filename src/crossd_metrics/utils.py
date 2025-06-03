@@ -10,6 +10,10 @@ import github.PaginatedList  # type: ignore
 import github.Repository  # type: ignore
 import rich.console
 import datetime
+import requests
+from bs4 import BeautifulSoup
+from urllib.request import urlopen, Request
+from dateutil.relativedelta import relativedelta
 
 """Various utility functions and classes for handling GitHub data."""
 
@@ -111,9 +115,9 @@ def handle_rate_limit(
     # add a little grace period
     sleep_time += 5
     if console:
-        console.log("rate limit exceeded - sleeping for " + str(sleep_time))
+        console.log("rate limit exceeded - sleeping for " + str(sleep_time) + " seconds")
     else:
-        print("rate limit exceeded - sleeping for " + str(sleep_time))
+        print("rate limit exceeded - sleeping for " + str(sleep_time) + " seconds")
     time.sleep(sleep_time)
     # if rate limit is still exceed for whatever reason, crash and let the task queue retry later
     # execute the supplied function and return the result
@@ -203,25 +207,44 @@ class IssueCommentOrder(Order):
 
 
 @dataclass
+class ReleaseOrder(Order):
+    """Ordering type for sorting releases."""
+
+    field: typing.Literal["CREATED_AT", "NAME"]
+
+
+@dataclass
 class RepositoryOrder(Order):
     """Ordering type for sorting repositories."""
 
     field: typing.Literal["NAME", "CREATED_AT", "UPDATED_AT", "PUSHED_AT", "STARGAZERS"]
 
 
+# @dataclass
+# class RefOrder(Order):
+#     """Ordering type for sorting refs."""
+
+#     field: typing.Literal["ALPHABETICAL", "TAG_COMMIT_DATE"]
+
+
 @dataclass
-class RefOrder(Order):
+class AdvisoryOrder(Order):
     """Ordering type for sorting refs."""
 
-    field: typing.Literal["ALPHABETICAL", "TAG_COMMIT_DATE"]
+    field: typing.Literal["CREATED", "UPDATED", "PUBLISHED"]
 
 
 IsoDate = NewType("IsoDate", str)  # date in ISO8601 format
 
 
+def to_prop_camel(orig: str) -> str:
+    parts = orig.lower().split("_", 1)
+    return parts[0] + parts[-1][0].upper() + parts[1][1:]
+
+
 def get_security_advisories(
     repo: github.Repository.Repository,
-    sort: Literal["created", "updated", "published"] = "published",
+    sort: AdvisoryOrder = AdvisoryOrder("DESC", "PUBLISHED"),
 ) -> github.PaginatedList.PaginatedList:
     """
     Get the security advisories for a given repository in specified sort order.
@@ -238,11 +261,11 @@ def get_security_advisories(
         github.RepositoryAdvisory.RepositoryAdvisory,
         repo._requester,
         f"{repo.url}/security-advisories",
-        {"sort": sort},
+        {"sort": sort.field.lower(), "direction": sort.direction.lower()},
     )
 
 
-def get_past(since: datetime.datetime | datetime.timedelta | None) -> datetime.datetime | None:
+def get_past(since: datetime.datetime | relativedelta | None) -> datetime.datetime | None:
     """
     Get the past date based on the given datetime or timedelta.
 
@@ -256,9 +279,210 @@ def get_past(since: datetime.datetime | datetime.timedelta | None) -> datetime.d
     """
     if type(since) == datetime.datetime:
         return since
-    elif type(since) == datetime.timedelta:
+    elif type(since) == relativedelta:
         return datetime.datetime.now(datetime.UTC) - since
     elif type(since) == type(None):
         return None
     else:
         raise TypeError("since not of type datetime.datetime, datetime.timedelta or None")
+
+
+def get_osi_json():
+    """
+    Use licenseId to check for matching entries
+    with retrieved data from GitHub to check,
+    if license is OSI approved (isOsiApproved)
+    URL = https://raw.githubusercontent.com/spdx/license-list-data/master/json/licenses.json
+    """
+    url = "https://raw.githubusercontent.com/" + "spdx/license-list-data/master/json/licenses.json"
+    response = requests.get(url, timeout=100)
+    results_dict = response.json().get("licenses")
+    return results_dict
+
+
+def get_nvds(cve_id: str):
+    """
+    :param cve_id: CVE id, used to find the cve in the nvd database.
+                   e.g. CVE-2022-35920
+    :return: base score from NVD or None, if nothing was found
+    """
+    url = "https://nvd.nist.gov/vuln/detail/" + cve_id
+    score = None
+    try:
+        # response = requests.get(url)
+        response = urlopen(Request(url, headers={"User-Agent": "Mozilla/5.0"}))
+        soup = BeautifulSoup(response.read(), "html.parser")
+        severity_box = soup.find("div", {"id": "Vuln3CvssPanel"})
+        # print(severity_box)
+        for row in severity_box.find_all("div", {"class": "row no-gutters"}):
+            if row.find("span", {"class": "wrapData"}).text == "NVD":
+                base_score = severity_box.find("span", {"class": "severityDetail"}).text
+                try:
+                    score = float(base_score.split()[0])
+                except ValueError:
+                    pass
+    except AttributeError:
+        score = None
+    return score
+
+
+def date_filter(
+    data: list[dict],
+    selector: Callable[[dict], str],
+    since: datetime.datetime | relativedelta,
+) -> list[dict]:
+    """
+    Filter a list of dictionaries based on a date.
+
+    Args:
+        data: list[dict]: The list of dictionaries to be filtered.
+        selector: Callable: A function that takes a dictionary and returns a date ISO8601 string.
+        since: datetime.datetime | datetime.timedelta: The date or time duration to filter the data. (Default value = datetime.timedelta(days=30 * 6))
+    Returns:
+        list[dict]: A list of dictionaries that match the date filter.
+    """
+    if type(since) == datetime.datetime:
+        # if since is a datetime object, use it as is
+        past = since
+    elif type(since) == relativedelta:
+        # if since is a timedelta object, use it to calculate the past date
+        past = datetime.datetime.now(datetime.UTC) - since
+    else:
+        raise TypeError("since not of type datetime.datetime, dateutil.relativedelta.relativedelta")
+
+    res = []
+    for elem in data:
+        if datetime.datetime.fromisoformat(selector(elem)) > past:
+            res.append(elem)
+    return res
+
+
+def get_contributors(data, check_contrib=False) -> int:
+    """
+    Gets number of contributors.
+    :param contributors_data: Data with user and their contributions
+    :param check_contrib: True if for contributions has to be checked
+    :return: Number of contributors per repository
+    """
+    # repo_contributors = {}
+    # for repo, data in data:
+    # contributors_nr = 0
+    if check_contrib:
+        data = [x for x in data if x["contributions"]]
+        # for user in data:
+        #     if user and isinstance(user, dict):
+        #         contributions = user.get("contributions")
+        #         if contributions:
+        #             contributors_nr += 1
+        # else:
+        # contributors_nr = len(data)
+        # repo_contributors[repo] = contributors_nr
+    return len(data)
+
+
+CRITICALITY_WEIGHTS = {
+    "created_since": {"weight": 1, "max_threshold": 120},
+    "updated_since": {"weight": -1, "max_threshold": 120},
+    "contributor_count": {"weight": 2, "max_threshold": 5000},
+    "org_count": {"weight": 1, "max_threshold": 10},
+    "commit_frequency": {"weight": 1, "max_threshold": 1000},
+    "recent_releases_count": {"weight": 0.5, "max_threshold": 26},
+    "closed_issues_count": {"weight": 0.5, "max_threshold": 5000},
+    "updated_issues_count": {"weight": 0.5, "max_threshold": 5000},
+    "comment_frequency": {"weight": 1, "max_threshold": 15},
+    "dependents_count": {"weight": 2, "max_threshold": 500000},
+}
+
+
+def get_contributor_per_files(commits: list) -> dict[str, set]:
+    """
+    Getting unique contributors per file and
+    retrieving co authors from the commit message.
+    :param commit: Single Commit object returned by API
+    :return: Files with corresponding contributors
+    """
+    file_committer = {}
+    # for features in commit.values():
+    #     for row in features:
+    for commit in commits:
+        files = commit.get("files")
+        try:
+            co_authors = set()
+            committer_email = commit.get("committer").get("email")
+            author_email = commit.get("author").get("email")
+            # message = commit.get("message")
+            # co_author_line = re.findall(r"Co-authored-by:(.*?)>", message)
+            verification = commit.get("has_signature")
+            # for value in co_author_line:
+            #     co_author = value.split("<")[-1]
+            #     co_authors.add(co_author)
+            for elem in commit.get("co_authors"):
+                co_author = elem.get("email")
+                co_authors.add(co_author)
+            if committer_email != author_email:
+                contributor = author_email
+            else:
+                if verification:
+                    contributor = author_email
+                else:
+                    contributor = committer_email
+        except AttributeError as att_err:
+            print(f"Attribute error at commit: {commit}: {att_err}")
+            raise
+        if co_authors:
+            contributors = {contributor} | co_authors
+        else:
+            contributors = {contributor}
+        for file in files:
+            filename = file
+            # filename = file.get("filename")
+            if filename not in file_committer:
+                file_committer[filename] = contributors
+            else:
+                existing_file = file_committer.get(filename)
+                if existing_file:
+                    file_committer[filename] = existing_file.union(contributors)
+    return file_committer
+
+
+def invert_dict(dictionary: dict) -> dict:
+    """
+    Change dictionary values to keys.
+    """
+    inverse = dict()
+    for key in dictionary:
+        for item in dictionary[key]:
+            if item not in inverse:
+                inverse[item] = [key]
+            else:
+                inverse[item].append(key)
+    return inverse
+
+
+def is_branch_active(branch: dict) -> bool:
+    # return datetime.datetime.now(datetime.UTC) - datetime.datetime.fromisoformat(
+    #     branch["branch"]["commit"]["committedDate"]
+    # ) > datetime.timedelta(days=30 * 3)
+    return datetime.datetime.fromisoformat(branch["branch"]["commit"]["committedDate"]) > (
+        datetime.datetime.now(datetime.UTC) - relativedelta(months=3)
+    )
+
+
+def get_active_branches(branches: list[dict]) -> list[dict]:
+    return {
+        branch["branch"]["name"]: (
+            elem[0] if (elem := branch["branch"]["associatedPullRequests"]["nodes"]) else {}
+        ).get("state", "")
+        for branch in branches
+        if is_branch_active(branch)
+    }
+
+
+def get_stale_branches(branches: list[dict]) -> list[dict]:
+    return {
+        branch["branch"]["name"]: (
+            elem[0] if (elem := branch["branch"]["associatedPullRequests"]["nodes"]) else {}
+        ).get("state", "")
+        for branch in branches
+        if not is_branch_active(branch)
+    }
