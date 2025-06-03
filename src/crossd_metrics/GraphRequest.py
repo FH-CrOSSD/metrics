@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Self, override
 
 import crossd_metrics
+from crossd_metrics.constants import MAX_RETRIES_CHUNKED_ERROR
 import gql  # type: ignore[import]
 import gql.transport  # type: ignore[import]
 import gql.transport.exceptions  # type: ignore[import]
@@ -14,6 +15,7 @@ from gql import Client
 from gql.dsl import DSLQuery, DSLSchema, DSLType, dsl_gql  # type: ignore[import]
 from gql.transport.requests import RequestsHTTPTransport  # type: ignore[import]
 from graphql import build_ast_schema, parse  # type: ignore[import]
+import requests
 from rich.progress import track
 
 
@@ -47,7 +49,7 @@ class GraphRequest(Request):
         self.transport = RequestsHTTPTransport(
             url="https://api.github.com/graphql",
             verify=True,
-            retries=3,
+            retries=5,
             timeout=100,
             headers={
                 "Authorization": f'bearer {os.environ.get("GH_TOKEN").strip()}',
@@ -63,9 +65,9 @@ class GraphRequest(Request):
         )
 
         # store the gql query to be executed
-        self._query: DSLType = None # type: ignore
+        self._query: DSLType = None  # type: ignore
         # stores functions that are used check if paginations for a specific part are needed
-        self._paginations: list[Callable] = [] # type: ignore
+        self._paginations: list[Callable] = []  # type: ignore
         # reset the query for reuse
         self._reset_query()
 
@@ -185,7 +187,7 @@ class GraphRequest(Request):
         query = dsl_gql(DSLQuery(*query_parts))
         return self.client.execute(query)
 
-    def __execute_page(self, rate_limit: bool) -> dict:
+    def __execute_page(self, rate_limit: bool, tries: int = 0) -> dict:
         """Execute the GraphQL query for a specific page.
         Args:
           rate_limit: bool: Whether to check rate limits or not.
@@ -198,10 +200,18 @@ class GraphRequest(Request):
         try:
             # Execute the GraphQL query
             return self.__execute(rate_limit)
+        except requests.exceptions.ChunkedEncodingError as cee:
+            print("cee")
+            if tries < MAX_RETRIES_CHUNKED_ERROR:
+                print("retry")
+                return self.__execute_page(rate_limit, tries=tries + 1)
+            else:
+                raise cee
         except gql.transport.exceptions.TransportServerError as tse:
             # Check if the error is a rate limit error
             if tse.code in [403, 429]:
                 # wait for the rate limit to reset
+                print(tse)
                 return handle_rate_limit(
                     self.transport.response_headers.get("x-ratelimit-reset"),
                     lambda: self.__execute(rate_limit),

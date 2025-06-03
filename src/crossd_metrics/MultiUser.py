@@ -64,6 +64,7 @@ class MultiUser(User):
 
         # use alias to replace forbidden characters
         self.query[login].alias(f"user_{re.sub(r"[\[\-\]]","_",login)}").select(
+            self.ds.User.login,
             self.ds.User.organizations(first=100, after=after).select(
                 self.ds.OrganizationConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor

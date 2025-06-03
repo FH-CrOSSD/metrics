@@ -18,10 +18,12 @@ from crossd_metrics.CrawlRequest import CrawlRequest
 from crossd_metrics.GraphRequest import GraphRequest
 from crossd_metrics.RestRequest import RestRequest
 from crossd_metrics.utils import (
+    AdvisoryOrder,
     IsoDate,
     IssueCommentOrder,
     IssueOrder,
     PullRequestOrder,
+    ReleaseOrder,
     RepositoryOrder,
     get_past,
     get_security_advisories,
@@ -32,6 +34,7 @@ from crossd_metrics.utils import (
 from gql.dsl import DSLInlineFragment  # type: ignore[import]
 from rich.console import Console
 from rich.progress import track
+from dateutil.relativedelta import relativedelta
 
 
 class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
@@ -52,8 +55,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         self.console = Console(force_terminal=True)
         # indicates whether to keep queue running
         self.keep_running = True
-        # retrieve data from the last 6 months
-        self.since = datetime.timedelta(days=6 * 30)
+        # # retrieve data from the last 6 months
+        # self.since = datetime.timedelta(days=6 * 30)
         # self.since = None
         super(Repository, self).__init__(owner=owner, name=name)
 
@@ -89,9 +92,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             .ask_subscribers()
             .ask_community_profile()
             .ask_contributors()
-            # .ask_releases()
-            .ask_releases_crawl()
-            # .ask_releases()
+            .ask_releases()
+            # .ask_releases_crawl()
             .ask_security_advisories()
             .ask_issues()
             .ask_forks()
@@ -176,7 +178,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         return self
 
     def ask_security_advisories(
-        self, orderBy: Literal["created", "updated", "published"] = "published"
+        self, orderBy: AdvisoryOrder = AdvisoryOrder("DESC", "PUBLISHED")
     ) -> Self:
         """Queue rest api task to retrieve the repository security advisories.
         The security advisories are retrieved via the REST API, as the GraphQL API does not support
@@ -191,7 +193,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         return self
 
     def _get_security_advisories(
-        self, orderBy: Literal["created", "updated", "published"] = "published"
+        self,
+        orderBy: AdvisoryOrder = AdvisoryOrder("DESC", "PUBLISHED"),
+        since: relativedelta | None = None,
     ) -> dict:
         """Get security advisories for the repository per rest api.
 
@@ -205,14 +209,15 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # use modified function as the original function does not support sorting
         for x in get_security_advisories(self.gh.get_repo(f"{self.owner}/{self.name}"), orderBy):
             # check if the advisory is older than the since date
-            past = get_past(self.since)
-            if not x._rawData["published_at"]:
+            past = get_past(since)
+            if not x._rawData[orderBy.field.lower() + "_at"]:
                 # if the advisory has no published_at date, skip it
                 continue
             if (
-                self.since
+                since
                 and past
-                and datetime.datetime.fromisoformat(x._rawData["published_at"]) < past
+                and datetime.datetime.fromisoformat(x._rawData[orderBy.field.lower() + "_at"])
+                < past
             ):
                 break
             res["advisories"].append(x._rawData)
@@ -389,11 +394,11 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
 
         if status != 200:
             self.console.log("unable to retrieve community profile")
-            return {"commmunity_profile": None}
+            return {"community_profile": None}
 
         body = json.loads(body)
 
-        return {"commmunity_profile": body}
+        return {"community_profile": body}
 
     def _get_dependencies_sbom(self) -> dict:
         """Retrieves the dependencies count of the repository via the SBOM information per REST API call.
@@ -486,7 +491,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def __since_filter(
         self,
         selector: str | int | list[str | int],
-        since: datetime.datetime | datetime.timedelta | None = datetime.timedelta(days=30 * 6),
+        since: datetime.datetime | relativedelta | None,
     ) -> Callable:
         """Returns a function that checks if the data is newer than since.
 
@@ -501,7 +506,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         if type(since) == datetime.datetime:
             # if since is a datetime object, use it as is
             past = since
-        elif type(since) == datetime.timedelta:
+        elif type(since) == relativedelta:
             # if since is a timedelta object, use it to calculate the past date
             past = datetime.datetime.now(datetime.UTC) - since
         elif type(since) == type(None):
@@ -509,7 +514,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             # (i.e. no filter)
             return lambda x: True
         else:
-            raise TypeError("since not of type datetime.datetime, datetime.timedelta or None")
+            raise TypeError(
+                "since not of type datetime.datetime, dateutil.relativedelta.relativedelta or None"
+            )
 
         def func(data: dict) -> bool:
             """
@@ -612,7 +619,12 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         self.crawl.put(self._get_dependents)
         return self
 
-    def ask_releases(self, after: typing.Optional[str] = None) -> Self:
+    def ask_releases(
+        self,
+        after: typing.Optional[str] = None,
+        orderBy: ReleaseOrder = ReleaseOrder("DESC", "CREATED_AT"),
+        since: relativedelta | None = relativedelta(months=12),
+    ) -> Self:
         """Queue graphql task to retrieve the releases of the repository.
         Warning: Github API provides a totalCount of 1000 at max (same when paginating nodes).
 
@@ -622,25 +634,48 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         Returns:
             Self: The current instance of the Repository class.
         """
-        raise DeprecationWarning(
-            "Github API provides a totalCount of 1000 at max (same when paginating nodes)"
-        )
+        # raise DeprecationWarning(
+        #     "Github API provides a totalCount of 1000 at max (same when paginating nodes)"
+        # )
         # tested with
         # Repository(owner="vercel", name="next.js")
         # Repository(owner="vercel", name="vercel")
         self.query.select(
-            self.ds.Repository.releases(first=100, after=after).select(
+            self.ds.Repository.releases(first=100, after=after, orderBy=asdict(orderBy)).select(
                 self.ds.ReleaseConnection.totalCount,
-                self.ds.ReleaseConnection.edges.select(self.ds.ReleaseEdge.cursor),
+                self.ds.ReleaseConnection.pageInfo.select(
+                    self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                ),
+                self.ds.ReleaseConnection.edges.select(
+                    self.ds.ReleaseEdge.cursor,
+                    self.ds.ReleaseEdge.node.select(
+                        self.ds.Release.createdAt,
+                        self.ds.Release.publishedAt,
+                        self.ds.Release.tagName,
+                        self.ds.Release.name,
+                    ),
+                ),
             )
         )
-        # for pagination, method: this method, key: dict key in result (to update)
-        self.post_graphql.append(
-            {
-                "method": self.ask_releases,
-                "key": lambda x: x["repository"]["releases"],
-            }
+        self.paginations.append(
+            simple_pagination(
+                "releases",
+                self.ask_releases,
+                filters=[
+                    self.__since_filter(
+                        ["repository", "releases", "edges", -1, "node", "createdAt"],
+                        since=since,
+                    )
+                ],
+            )
         )
+        # # for pagination, method: this method, key: dict key in result (to update)
+        # self.post_graphql.append(
+        #     {
+        #         "method": self.ask_releases,
+        #         "key": lambda x: x["repository"]["releases"],
+        #     }
+        # )
         return self
 
     def ask_releases_crawl(self) -> Self:
@@ -687,6 +722,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         number: str | int,
         after: typing.Optional[str] = None,
         orderBy: IssueCommentOrder = IssueCommentOrder("DESC", "UPDATED_AT"),
+        since: relativedelta | None = relativedelta(months=3),
     ) -> Self:
         """Queue graphql task to retrieve the comments of an issue of the repository.
 
@@ -734,7 +770,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 # check if the last comment is older than since
                 if self.__since_filter(
                     ["repository", f"issue{number}", "comments", "edges", -1, "node", "updatedAt"],
-                    since=self.since,
+                    since=since,
                 )(data):
                     return [
                         # get next page of comments
@@ -755,7 +791,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def ask_issues(
         self,
         after: typing.Optional[str] = None,
-        orderBy: IssueOrder = IssueOrder("DESC", "CREATED_AT"),
+        orderBy: IssueOrder = IssueOrder("DESC", "UPDATED_AT"),
+        since: relativedelta | None = relativedelta(months=6),
     ) -> Self:
         """Queue graphql task to retrieve the issues of the repository.
         Also queues a pagination function retrieving the comments of the issues.
@@ -767,6 +804,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         Returns:
             Self: The current instance of the Repository class.
         """
+        # NOTE: Issues via Graphql only contain issues (REST API includes pull requests)
         self.query.select(
             self.ds.Repository.issues(first=100, after=after, orderBy=asdict(orderBy)).select(
                 self.ds.IssueConnection.totalCount,
@@ -781,9 +819,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                         self.ds.Issue.createdAt,
                         self.ds.Issue.number,
                         self.ds.Issue.state,
-                        self.ds.Issue.closedByPullRequestsReferences(first=0).select(
-                            self.ds.PullRequestConnection.totalCount
-                        ),
+                        # self.ds.Issue.closedByPullRequestsReferences(first=0).select(
+                        #     self.ds.PullRequestConnection.totalCount
+                        # ),
                     ),
                 ),
             )
@@ -833,7 +871,19 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             # check if pagination of issues is necessary
             if data["repository"]["issues"]["pageInfo"]["hasNextPage"]:
                 if self.__since_filter(
-                    ["repository", "issues", "edges", -1, "node", "createdAt"], since=self.since
+                    [
+                        "repository",
+                        "issues",
+                        "edges",
+                        -1,
+                        "node",
+                        (
+                            utils.to_prop_camel(orderBy.field)
+                            if orderBy.field in ("CREATED_AT", "UPDATED_AT")
+                            else "updatedAt"
+                        ),
+                    ],
+                    since=since,
                 )(data):
                     res.append(
                         lambda: self.ask_issues(
@@ -884,12 +934,13 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         except AttributeError:
             pass
 
-        return {"dependents": res}
+        return {"dependents": {"count": res}}
 
     def ask_forks(
         self,
         after: typing.Optional[str] = None,
         orderBy: RepositoryOrder = RepositoryOrder("DESC", "CREATED_AT"),
+        since: relativedelta | None = relativedelta(months=6),
     ) -> Self:
         """Queues a graphql task to retrieve the forks of the repository.
 
@@ -906,18 +957,115 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
                 ),
                 self.ds.RepositoryConnection.nodes.select(
-                    self.ds.Repository.created_at, self.ds.Repository.id
+                    self.ds.Repository.created_at,
+                    self.ds.Repository.id,
+                    self.ds.Repository.updated_at,
                 ),
             )
         )
 
-        # TODO add pagination?
+        # queue method that checks if pagination is necessary
+        # limit to pull requests that are newer than since
+        self.paginations.append(
+            simple_pagination(
+                "forks",
+                self.ask_forks,
+                filters=[
+                    self.__since_filter(
+                        [
+                            "repository",
+                            "forks",
+                            "nodes",
+                            -1,
+                            (
+                                utils.to_prop_camel(orderBy.field)
+                                if orderBy.field in ("CREATED_AT", "UPDATED_AT")
+                                else "createdAt"
+                            ),
+                        ],
+                        since=since,
+                    )
+                ],
+            )
+        )
+        return self
+
+    def ask_pull_comments(
+        self,
+        number: str | int,
+        after: typing.Optional[str] = None,
+        orderBy: IssueCommentOrder = IssueCommentOrder("DESC", "UPDATED_AT"),
+        since: relativedelta | None = relativedelta(months=3),
+    ) -> Self:
+        """Queue graphql task to retrieve the comments of an issue of the repository.
+
+        Args:
+          number: str | int: Issue number
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          orderBy: IssueCommentOrder: Sort order for the issue comments (Default value = IssueCommentOrder("DESC"), "UPDATED_AT")
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        self.query.select(
+            self.ds.Repository.pullRequest(number=number)
+            .alias(f"pull{number}")
+            .select(
+                self.ds.PullRequest.createdAt,
+                self.ds.PullRequest.comments(first=100, after=after, orderBy=asdict(orderBy)).select(
+                    self.ds.IssueCommentConnection.totalCount,
+                    self.ds.IssueCommentConnection.pageInfo.select(
+                        self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                    ),
+                    self.ds.IssueCommentConnection.edges.select(
+                        self.ds.IssueCommentEdge.cursor,
+                        self.ds.IssueCommentEdge.node.select(
+                            self.ds.IssueComment.id,
+                            self.ds.IssueComment.createdAt,
+                            self.ds.IssueComment.updatedAt,
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        def pagination(data: dict) -> list[Callable] | Callable | None:
+            """Provides a function that checks if pagination is necessary. Check if comments are older than since.
+
+            Args:
+              data: dict: repository data dict to check
+
+            Returns:
+                list[Callable] | Callable | None: List of functions that checks if pagination is necessary.
+                None if no pagination is necessary.
+            """
+            if data["repository"][f"pull{number}"]["comments"]["pageInfo"]["hasNextPage"]:
+                # check if the last comment is older than since
+                if self.__since_filter(
+                    ["repository", f"pull{number}", "comments", "edges", -1, "node", "updatedAt"],
+                    since=since,
+                )(data):
+                    return [
+                        # get next page of comments
+                        lambda: self.ask_pull_comments(
+                            number,
+                            after=data["repository"][f"pull{number}"]["comments"]["pageInfo"][
+                                "endCursor"
+                            ],
+                        )
+                    ]
+            return None
+
+        # add pagination function to the list of paginations
+        self.paginations.append(pagination)
+
         return self
 
     def ask_pull_requests(
         self,
         after: typing.Optional[str] = None,
-        orderBy: PullRequestOrder = PullRequestOrder("DESC", "CREATED_AT"),
+        orderBy: PullRequestOrder = PullRequestOrder("DESC", "UPDATED_AT"),
+        since: relativedelta | None = relativedelta(months=6),
     ) -> Self:
         """Queue graphql task to retrieve the pull requests of the repository.
 
@@ -937,29 +1085,109 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 self.ds.PullRequestConnection.edges.select(
                     self.ds.PullRequestEdge.cursor,
                     self.ds.PullRequestEdge.node.select(
+                        self.ds.PullRequest.number,
                         self.ds.PullRequest.mergedAt,
                         self.ds.PullRequest.createdAt,
                         self.ds.PullRequest.closedAt,
                         self.ds.PullRequest.state,
+                        self.ds.PullRequest.updatedAt,
                     ),
                 ),
             )
         )
 
+        def pagination(data: dict) -> list[Callable] | None:
+            """Returns pagination functions for the issues comments and issues.
+
+            Args:
+              data: dict: repository data dict to check
+
+            Returns:
+                list[Callable] | None: List of functions that checks if pagination is necessary.
+                None if no pagination is necessary.
+            """
+            # stores the pagination functions
+            res = []
+            cutoff = 0
+            # get the last issue cursor
+            for i, elem in enumerate(data["repository"]["pullRequests"]["edges"]):
+                # if the cursor is the same as the after cursor, set cutoff to the index
+                if elem["cursor"] == after:
+                    cutoff = i + 1
+                    break
+
+            def _get_func(num) -> Callable:
+                """Returns a function that retrieves the comments of an issue.
+                The function is created in a closure to avoid the late binding problem.
+
+                Args:
+                  num:  int: Issue number
+
+                Returns:
+                    Callable: Function that queues the retrieval of the comments of the issue
+                """
+                # copy by value
+                return lambda: self.ask_pull_comments(str(num))
+
+            # get comment retrieval functions for the newly retrieved issues
+            tmp = [
+                _get_func(x["node"]["number"])
+                for x in data["repository"]["pullRequests"]["edges"][cutoff:]
+            ]
+
+            res.extend(tmp)
+
+            # check if pagination of issues is necessary
+            if data["repository"]["pullRequests"]["pageInfo"]["hasNextPage"]:
+                if self.__since_filter(
+                    [
+                        "repository",
+                        "pullRequests",
+                        "edges",
+                        -1,
+                        "node",
+                        (
+                            utils.to_prop_camel(orderBy.field)
+                            if orderBy.field in ("CREATED_AT", "UPDATED_AT")
+                            else "updatedAt"
+                        ),
+                    ],
+                    since=since,
+                )(data):
+                    res.append(
+                        lambda: self.ask_pull_requests(
+                            after=data["repository"]["pullRequests"]["pageInfo"]["endCursor"]
+                        )
+                    )
+            return res
+
         # queue method that checks if pagination is necessary
         # limit to pull requests that are newer than since
-        self.paginations.append(
-            simple_pagination(
-                "pullRequests",
-                self.ask_pull_requests,
-                filters=[
-                    self.__since_filter(
-                        ["repository", "pullRequests", "edges", -1, "node", "createdAt"],
-                        since=self.since,
-                    )
-                ],
-            )
-        )
+        # self.paginations.append(
+        #     simple_pagination(
+        #         "pullRequests",
+        #         self.ask_pull_requests,
+        #         filters=[
+        #             self.__since_filter(
+        #                 [
+        #                     "repository",
+        #                     "pullRequests",
+        #                     "edges",
+        #                     -1,
+        #                     "node",
+        #                     (
+        #                         utils.to_prop_camel(orderBy.field)
+        #                         if orderBy.field in ("CREATED_AT", "UPDATED_AT")
+        #                         else "updatedAt"
+        #                     ),
+        #                 ],
+        #                 since=since,
+        #             )
+        #         ],
+        #     )
+        # )
+
+        self.paginations.append(pagination)
 
         return self
 
@@ -1104,7 +1332,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         self.clone.put(self._get_commits_clone)
         return self
 
-    def _get_commits_clone(self) -> dict:
+    def _get_commits_clone(self, since: relativedelta | None = relativedelta(months=12)) -> dict:
         """Retrieves the commits of the locally cloned repository.
 
         Returns:
@@ -1112,7 +1340,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         """
         res = []
         # get past date
-        past = get_past(self.since)
+        past = get_past(since)
 
         with self.console.status("Getting commits..."):
             # get commits from the local repository
@@ -1126,14 +1354,19 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     {
                         "sha": commit.hexsha,
                         "author": {"name": commit.author.name, "email": commit.author.email},
-                        "committer": {"name": commit.committer.name, "email": commit.committer.email},
+                        "committer": {
+                            "name": commit.committer.name,
+                            "email": commit.committer.email,
+                        },
                         "authored_iso": commit.authored_datetime.isoformat(),
                         "committed_iso": commit.committed_datetime.isoformat(),
                         "message": commit.message,
                         "has_signature": bool(commit.gpgsig),
                         "insertions": stat.total["insertions"],
                         "deletions": stat.total["deletions"],
-                        "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
+                        "co_authors": [
+                            {"name": x.name, "email": x.email} for x in commit.co_authors
+                        ],
                         "files": list(stat.files.keys()),
                     }
                 )
