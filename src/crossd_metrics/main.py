@@ -12,20 +12,20 @@ import json
 console = Console(force_terminal=True)
 console.rule("Data Retrieval")
 
-# res = (
+res = (
 #     Repository(owner="vercel", name="next.js")
 #     # Repository(owner="vercel", name="vercel")
 #     # Repository(owner="sveltejs", name="svelte")
-#     # Repository(owner="lorabridge2", name="bridge-automation-manager")
+    Repository(owner="lorabridge2", name="bridge-automation-manager")
 #     # Repository(owner="microsoft", name="vscode")
 #     # Repository(owner="FH-CrOSSD", name=".github")
-#     .ask_all()
-#     .execute(rate_limit=True, verbose=True)
-# )
+    .ask_all()
+    .execute(rate_limit=True, verbose=True)
+)
 
 # open(res["repository"]["name"]+".json", "w").write(json.dumps(res))
 
-res = json.loads(open("vscode.json").read())
+# res = json.loads(open("vscode.json").read())
 
 users = []
 tmp = {}
@@ -61,4 +61,4 @@ else:
 # )
 console.log(res)
 res["organizations"] = tmp
-open(res["repository"]["name"] + "_orgs.json", "w").write(json.dumps(res))
+open(res["repository"]["name"] + "2_orgs.json", "w").write(json.dumps(res))
