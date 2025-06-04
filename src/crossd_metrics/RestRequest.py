@@ -8,7 +8,7 @@ import github # type: ignore[import]
 from crossd_metrics.Request import Request
 from crossd_metrics.utils import handle_rate_limit
 from github import Auth, Github
-from TokenPool import TokenPool # type: ignore[import]
+from crossd_metrics.TokenPool import TokenPool # type: ignore[import]
 
 
 class RestRequest(Request):
