@@ -6,17 +6,17 @@ authors = [
     {name = "", email = ""},
 ]
 dependencies = [
-    "gql>=3.4.1",
-    "python-dotenv>=1.0.0",
-    "beautifulsoup4>=4.12.2",
-    "rich>=13.4.2",
-    "PyGithub>=1.59.0",
+    "gql>=3.5.3",
+    "python-dotenv>=1.1.0",
+    "beautifulsoup4>=4.13.4",
+    "rich>=14.0.0",
+    "PyGithub>=1.59.1",
     "requests-toolbelt>=1.0.0",
     "html5lib>=1.1",
     "GitPython>=3.1.44",
     "python-dateutil>=2.9.0.post0",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 readme = "README.md"
 license = {text = "MIT"}
 
