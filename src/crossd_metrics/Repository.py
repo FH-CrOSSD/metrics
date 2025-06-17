@@ -31,16 +31,18 @@ from crossd_metrics.utils import (
     merge_dicts,
     simple_pagination,
 )
+from dateutil.relativedelta import relativedelta
 from gql.dsl import DSLInlineFragment  # type: ignore[import]
 from rich.console import Console
-from rich.progress import track
-from dateutil.relativedelta import relativedelta
-
+from github.GithubException import GithubException  # type: ignore[import]
+import datetime
 
 class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     """Retrieves information about a GitHub repository."""
 
-    def __init__(self, owner: str, name: str):
+    __LOG_PREFIX = "[dark_sea_green4 bold][Repository][/dark_sea_green4 bold]"
+
+    def __init__(self, owner: str, name: str, clone_opts: dict = {}):
         """Initializes the Repository object.
 
         Args:
@@ -52,13 +54,15 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # Github repository name
         self.name = name
         # rich object for logging
-        self.console = Console(force_terminal=True)
+        # self.console = Console(force_terminal=True)
+        self.console = Console()
         # indicates whether to keep queue running
-        self.keep_running = True
         # # retrieve data from the last 6 months
         # self.since = datetime.timedelta(days=6 * 30)
         # self.since = None
         super(Repository, self).__init__(owner=owner, name=name)
+        self.clone_opts = clone_opts
+        self.keep_running = True
 
     @override
     def _reset_query(self) -> None:
@@ -332,6 +336,17 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
 
         return {"dependencies": {"count": int(res)}}
 
+    def contributors_available(self) -> bool:
+        try:
+            self.gh.get_repo(f"{self.owner}/{self.name}").get_contributors().totalCount
+            return True
+        except GithubException as ge:
+            if ge.status == 403 and "list is too large" in ge.message:
+                return False
+            else:
+                self.console.log(ge)
+                raise ge
+
     def ask_contributors(self) -> Self:
         """Queue rest api task to retrieve the contributors of the repository.
         Not available via GraphQL API.
@@ -393,7 +408,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                         raise httpe
 
         if status != 200:
-            self.console.log("unable to retrieve community profile")
+            self.console.log(f"{self.__LOG_PREFIX} unable to retrieve community profile")
             return {"community_profile": None}
 
         body = json.loads(body)
@@ -417,6 +432,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             if str(re.args[0].reason) == "too many 500 error responses":
                 # if all retries fail, try to get the data via the crawl method
                 try:
+                    self.console.log(
+                        f"{self.__LOG_PREFIX} Getting dependencies via sbom failed, trying to get them via crawl method"
+                    )
                     return self._get_dependencies_crawl()
                 except urllib.error.HTTPError as httpe:
                     # handle rate limit
@@ -437,7 +455,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # }
 
         if status != 200:
-            self.console.log("unable to retrieve sbom")
+            self.console.log(f"{self.__LOG_PREFIX} unable to retrieve sbom")
             return {"dependencies": {"count": None, "names": None}}
 
         sbom = json.loads(body)["sbom"]
@@ -713,7 +731,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 .strip()
             )
         except AttributeError:
-            self.console.log("did not find release count")
+            self.console.log(f"{self.__LOG_PREFIX} did not find release count")
             pass
         return {"releases": release_count}
 
@@ -1012,7 +1030,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             .alias(f"pull{number}")
             .select(
                 self.ds.PullRequest.createdAt,
-                self.ds.PullRequest.comments(first=100, after=after, orderBy=asdict(orderBy)).select(
+                self.ds.PullRequest.comments(
+                    first=100, after=after, orderBy=asdict(orderBy)
+                ).select(
                     self.ds.IssueCommentConnection.totalCount,
                     self.ds.IssueCommentConnection.pageInfo.select(
                         self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
@@ -1261,7 +1281,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # set per_page to 5 to avoid timeouts
         self.gh.per_page = 5
 
-        for wf in track(wfs, description="Retrieving status of workflows", total=wfs.totalCount):
+        self.console.log(f"{self.__LOG_PREFIX} Retrieving status of {wfs.totalCount} workflows")
+        for wf in wfs:
             for run in wf.get_runs():
                 # only check finished workflow runs
                 if run.conclusion:
@@ -1291,6 +1312,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     break
         # revert pagination size to original value
         self.gh.per_page = old_per_page
+        self.console.log(f"{self.__LOG_PREFIX} Finished getting workflows")
         return {"workflows": res}
 
     def _get_workflow_runs(self) -> dict:
@@ -1301,38 +1323,36 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         """
         res = []
         count = 1
-        with self.console.status("Getting workflow runs..."):
-            # runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs(status="failure")
-            runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs()
-            self.console.log(f"total runs: {runs.totalCount}")
-            for wf in runs:
-                res.append(
-                    {
-                        "name": wf.name,
-                        "conclusion": wf.conclusion,
-                        "created_at": datetime.datetime.strftime(
-                            wf.created_at, "%Y-%m-%dT%H:%M:%S%z"
-                        ),
-                        "updated_at": datetime.datetime.strftime(
-                            wf.updated_at, "%Y-%m-%dT%H:%M:%S%z"
-                        ),
-                    }
-                )
-                if count % 10 == 0:
-                    self.console.log(f"workflow {count}")
-                count += 1
+        # with self.console.status("Getting workflow runs..."):
+        # runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs(status="failure")
+
+        self.console.log(f"{self.__LOG_PREFIX} Gettings workflow runs")
+        runs = self.gh.get_repo(f"{self.owner}/{self.name}").get_workflow_runs()
+        self.console.log(f"{self.__LOG_PREFIX} total runs: {runs.totalCount}")
+        for wf in runs:
+            res.append(
+                {
+                    "name": wf.name,
+                    "conclusion": wf.conclusion,
+                    "created_at": datetime.datetime.strftime(wf.created_at, "%Y-%m-%dT%H:%M:%S%z"),
+                    "updated_at": datetime.datetime.strftime(wf.updated_at, "%Y-%m-%dT%H:%M:%S%z"),
+                }
+            )
+            if count % 10 == 0:
+                self.console.log(f"{self.__LOG_PREFIX} workflow {count}")
+            count += 1
         return {"workflow_runs": res}
 
-    def ask_commits_clone(self) -> Self:
+    def ask_commits_clone(self, since: datetime.datetime | relativedelta | None = relativedelta(months=12)) -> Self:
         """Queue task that clones the git repository and retrieves the commits.
 
         Returns:
             Self: The current instance of the Repository class.
         """
-        self.clone.put(self._get_commits_clone)
+        self.clone.put(lambda: self._get_commits_clone(since))
         return self
 
-    def _get_commits_clone(self, since: relativedelta | None = relativedelta(months=12)) -> dict:
+    def _get_commits_clone(self, since: datetime.datetime|relativedelta | None = relativedelta(months=12)) -> dict:
         """Retrieves the commits of the locally cloned repository.
 
         Returns:
@@ -1342,39 +1362,45 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # get past date
         past = get_past(since)
 
-        with self.console.status("Getting commits..."):
-            # get commits from the local repository
-            for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
-                # calculate the commit stats
-                stat = commit.stats
-                # check if the commit is older than the past date
-                if past and commit.committed_datetime < past:
-                    break
-                res.append(
-                    {
-                        "sha": commit.hexsha,
-                        "author": {"name": commit.author.name, "email": commit.author.email},
-                        "committer": {
-                            "name": commit.committer.name,
-                            "email": commit.committer.email,
-                        },
-                        "authored_iso": commit.authored_datetime.isoformat(),
-                        "committed_iso": commit.committed_datetime.isoformat(),
-                        "message": commit.message,
-                        "has_signature": bool(commit.gpgsig),
-                        "insertions": stat.total["insertions"],
-                        "deletions": stat.total["deletions"],
-                        "co_authors": [
-                            {"name": x.name, "email": x.email} for x in commit.co_authors
-                        ],
-                        "files": list(stat.files.keys()),
-                    }
-                )
-                if i % 100 == 0:
-                    self.console.log(f"Currently at commit # {i}")
+        self.console.log(f"{self.__LOG_PREFIX} Gettings commits")
+        # get commits from the local repository
+        for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
+            # calculate the commit stats
+            stat = commit.stats
+            # check if the commit is older than the past date
+            if past and commit.committed_datetime < past:
+                break
+            res.append(
+                {
+                    "sha": commit.hexsha,
+                    "author": {"name": commit.author.name, "email": commit.author.email},
+                    "committer": {
+                        "name": commit.committer.name,
+                        "email": commit.committer.email,
+                    },
+                    "authored_iso": commit.authored_datetime.isoformat(),
+                    "committed_iso": commit.committed_datetime.isoformat(),
+                    "message": commit.message,
+                    "has_signature": bool(commit.gpgsig),
+                    "insertions": stat.total["insertions"],
+                    "deletions": stat.total["deletions"],
+                    "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
+                    "files": list(stat.files.keys()),
+                }
+            )
+            if i % 200 == 0:
+                self.console.log(f"{self.__LOG_PREFIX} Currently at commit # {i}")
+        self.console.log(f"{self.__LOG_PREFIX} Finished getting commits")
         return {"commits": res}
 
-    def ask_commits(self, after: typing.Optional[str] = None, since: IsoDate | None = None) -> Self:
+    def ask_commits(
+        self,
+        after: typing.Optional[str] = None,
+        since: IsoDate | None = None,
+        details: bool = True,
+        diff: bool = True,
+        # before: typing.Optional[str] = None,
+    ) -> Self:
         """Queue graphql task to retrieve the commits of the repository.
 
         Args:
@@ -1384,16 +1410,32 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         Returns:
             Self: The current instance of the Repository class.
         """
-        # (datetime.date.today()-datetime.timedelta(days=30*6)).isoformat()
+        # if before and after:
+        #     raise ValueError("before and after are mutually exclusive")
+        # if before:
+        #     raise NotImplementedError("before is currently not fully implemented")
+        # index = 100
+        # if before and (val := int(before.split(" ")[-1])) < 100:
+        #     index = val
+
         self.query.select(
             self.ds.Repository.defaultBranchRef.select(
                 self.ds.Ref.target.alias("last_commit").select(
                     DSLInlineFragment()
                     .on(self.ds.Commit)
                     .select(
-                        self.ds.Commit.history(first=100, after=after, since=since).select(
+                        self.ds.Commit.history(
+                            # **{"first" if not before else "last": index},
+                            first=100,
+                            after=after,
+                            since=since,
+                            # before=before,
+                        ).select(
                             self.ds.CommitHistoryConnection.pageInfo.select(
-                                self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
+                                self.ds.PageInfo.hasNextPage,
+                                self.ds.PageInfo.endCursor,
+                                # self.ds.PageInfo.startCursor,
+                                # self.ds.PageInfo.hasPreviousPage,
                             ),
                             self.ds.CommitHistoryConnection.edges.select(
                                 self.ds.CommitEdge.cursor,
@@ -1401,6 +1443,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                                     self.ds.Commit.authoredByCommitter,
                                     self.ds.Commit.oid,
                                     self.ds.Commit.authoredDate,
+                                    self.ds.Commit.committedDate,
                                     self.ds.Commit.signature.select(
                                         self.ds.GitSignature.isValid,
                                         self.ds.GitSignature.verifiedAt,
@@ -1422,8 +1465,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                                             self.ds.User.login, self.ds.User.id
                                         ),
                                     ),
-                                    self.ds.Commit.additions,
-                                    self.ds.Commit.deletions,
+                                    self.ds.Commit.additions if diff else self.ds.Commit.oid,
+                                    self.ds.Commit.deletions if diff else self.ds.Commit.oid,
                                     self.ds.Commit.message,
                                     self.ds.Commit.messageBody,
                                 ),
@@ -1446,57 +1489,102 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 None if no pagination is necessary.
             """
             res = []
-            cutoff = 0
-            # get the last commit cursor
-            # get new items to retrieve commit details for
-            for i, elem in enumerate(
-                data["repository"]["defaultBranchRef"]["last_commit"]["history"]["edges"]
-            ):
-                # if the cursor is the same as the after cursor, set cutoff to the index
-                if elem["cursor"] == after:
-                    cutoff = i + 1
-                    break
+            # if details and not before:
+            if details:
+                cutoff = 0
+                # get the last commit cursor
+                # get new items to retrieve commit details for
+                for i, elem in enumerate(
+                    data["repository"]["defaultBranchRef"]["last_commit"]["history"]["edges"]
+                ):
+                    # if the cursor is the same as the after cursor, set cutoff to the index
+                    if elem["cursor"] == after:
+                        cutoff = i + 1
+                        break
 
-            def _get_func(num: int) -> Callable:
-                """Returns a function that retrieves the commit details.
-                The function is created in a closure to avoid the late binding problem.
+                def _get_func(num: int) -> Callable:
+                    """Returns a function that retrieves the commit details.
+                    The function is created in a closure to avoid the late binding problem.
 
-                Args:
-                  num: int: Commit number
+                    Args:
+                    num: int: Commit number
 
-                Returns:
-                    Callable: Function that queues the retrieval of the commit details
-                """
-                # copy by value
-                return lambda: self._get_commit_details(str(num))
+                    Returns:
+                        Callable: Function that queues the retrieval of the commit details
+                    """
+                    # copy by value
+                    return lambda: self._get_commit_details(str(num))
 
-            # get commit retrieval functions for the newly retrieved commits
-            tmp = [
-                _get_func(x["node"]["oid"])
-                for x in data["repository"]["defaultBranchRef"]["last_commit"]["history"]["edges"][
-                    cutoff:
+                # get commit retrieval functions for the newly retrieved commits
+                tmp = [
+                    _get_func(x["node"]["oid"])
+                    for x in data["repository"]["defaultBranchRef"]["last_commit"]["history"][
+                        "edges"
+                    ][cutoff:]
                 ]
-            ]
 
-            # queue the commit details rest api retrieval functions
-            for elem in tmp:
-                self.rest.put(elem)
+                # queue the commit details rest api retrieval functions
+                for elem in tmp:
+                    self.rest.put(elem)
 
             # check if pagination of commits is necessary
+            # if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
+            #     "hasNextPage" if after else "hasPreviousPage"
+            # ]:
             if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
                 "hasNextPage"
             ]:
+                # if not before:
                 res.append(
                     lambda: self.ask_commits(
                         after=data["repository"]["defaultBranchRef"]["last_commit"]["history"][
                             "pageInfo"
-                        ]["endCursor"]
+                        ]["endCursor"],
+                        details=details,
+                        diff=diff,
                     )
                 )
+                # else:
+                #     res.append(
+                #         lambda: self.ask_commits(
+                #             before=data["repository"]["defaultBranchRef"]["last_commit"]["history"][
+                #                 "pageInfo"
+                #             ]["startCursor"],
+                #             details=details,
+                #             diff=diff,
+                #         )
+                #     )
             return res
 
         # add pagination function to the list of paginations
         self.paginations.append(pagination)
+
+        return self
+
+    def ask_commits_count(self, since: IsoDate | None = None) -> Self:
+        """Queue graphql task to retrieve the commits of the repository.
+
+        Args:
+          after: typing.Optional[str]: Github cursor for pagination (Default value = None)
+          since: IsoDate | None: Retrieve data newer than sice (Default value = None)
+
+        Returns:
+            Self: The current instance of the Repository class.
+        """
+        # (datetime.date.today()-datetime.timedelta(days=30*6)).isoformat()
+        self.query.select(
+            self.ds.Repository.defaultBranchRef.select(
+                self.ds.Ref.target.alias("last_commit").select(
+                    DSLInlineFragment()
+                    .on(self.ds.Commit)
+                    .select(
+                        self.ds.Commit.history(first=0, since=since).select(
+                            self.ds.CommitHistoryConnection.totalCount
+                        )
+                    )
+                )
+            )
+        )
 
         return self
 
@@ -1609,8 +1697,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         Returns:
             dict: Dictionary containing the results of the queries.
         """
-        if verbose:
-            self.console.log("retrieving Data")
+        self.console.log(
+            f"{self.__LOG_PREFIX} retrieving Data of repository {self.owner}/{self.name}"
+        )
 
         with ThreadPoolExecutor(4) as tpe:
             # calls GraphRequest.execute
@@ -1644,29 +1733,6 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 # raise exception
                 raise e
 
+        self.console.log(f"{self.__LOG_PREFIX} Finished repository {self.owner}/{self.name}")
         # merge the results of the different threads
         return merge_dicts(gres, cres, rres, cloneres)
-
-    # def _execute_crawl(self) -> dict:
-    #     """ """
-    #     return self._execute_sequence(self.crawl)
-
-    # def _execute_rest(self) -> dict:
-    #     """ """
-    #     return self._execute_sequence(self.rest)
-
-    # def _execute_sequence(self, seq: list[Callable]) -> dict:
-    #     """
-
-    #     Args:
-    #       seq: list[Callable]:
-    #       seq: list[Callable]:
-
-    #     Returns:
-
-    #     """
-    #     rest_res = [elem() for elem in seq]
-    #     res = {}
-    #     for elem in rest_res:
-    #         res.update(elem)
-    #     return res
