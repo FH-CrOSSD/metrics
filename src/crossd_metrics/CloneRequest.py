@@ -8,11 +8,15 @@ from typing import Self, override
 from crossd_metrics.Request import Request
 from crossd_metrics.utils import handle_rate_limit
 from git import Repo  # type: ignore[import]
+from rich.console import Console
+
 # from rich.console import Console
 
 
 class CloneRequest(Request):
     """Clones a Github repository and performs the queued actions on that repo."""
+
+    __LOG_PREFIX = "[magenta bold][CloneRequest][/magenta bold]"
 
     @override
     @abstractmethod
@@ -35,6 +39,8 @@ class CloneRequest(Request):
         # store the owner and name of the repository
         self.owner = owner
         self.name = name
+        self.clone_opts = {}
+        self.console = Console()
         # rich object for logging
         # self.console = Console(force_terminal=True)
         # store the cloned repository object
@@ -88,29 +94,37 @@ class CloneRequest(Request):
         res = {}
         # store the results of the tasks
         clone_res = []
-
-        # Creates a temporary directory to clone the repository
-        # and deletes it after use
-        with tempfile.TemporaryDirectory(delete=True) as tempdir:
-            # with self.console.status("Cloning repository"):
-            self.repo = Repo.clone_from(f"https://github.com/{self.owner}/{self.name}.git", tempdir)
-            try:
-                while item := self.clone.get():
-                    # Execute the task and store the result
-                    clone_res.append(item())
-                    # Mark the task as done
-                    self.clone.task_done()
-                    # Check if the queue is empty and if we should stop running
-                    if not self.keep_running and self.clone.empty():
-                        break
-            except queue.ShutDown: # type: ignore[attr-defined]
-                # Handle shutdown of the queue
-                pass
-            # Merge the results from the tasks
-            for elem in clone_res:
-                res.update(elem)
-            # Clean up the repository object
-            # This is important to avoid memory leaks
-            # https://gitpython.readthedocs.io/en/stable/intro.html#leakage-of-system-resources
-            self.repo.__del__()
-        return res
+        if not self.clone.empty():
+            self.console.log(f"{self.__LOG_PREFIX} Starting with local git tasks")
+            # Creates a temporary directory to clone the repository
+            # and deletes it after use
+            with tempfile.TemporaryDirectory(delete=True) as tempdir:
+                # with self.console.status("Cloning repository"):
+                self.console.log(f"{self.__LOG_PREFIX} Start cloning repository")
+                self.repo = Repo.clone_from(
+                    f"https://github.com/{self.owner}/{self.name}.git", tempdir, **self.clone_opts
+                )
+                self.console.log(f"{self.__LOG_PREFIX} Finished cloning repository")
+                try:
+                    while item := self.clone.get():
+                        # Execute the task and store the result
+                        self.console.log(f"{self.__LOG_PREFIX} Executing {item.__qualname__}")
+                        clone_res.append(item())
+                        # Mark the task as done
+                        self.clone.task_done()
+                        self.console.log(f"{self.__LOG_PREFIX} Finished {item.__qualname__}")
+                        # Check if the queue is empty and if we should stop running
+                        if not self.keep_running and self.clone.empty():
+                            break
+                except queue.ShutDown:  # type: ignore[attr-defined]
+                    # Handle shutdown of the queue
+                    pass
+                # Merge the results from the tasks
+                for elem in clone_res:
+                    res.update(elem)
+                # Clean up the repository object
+                # This is important to avoid memory leaks
+                # https://gitpython.readthedocs.io/en/stable/intro.html#leakage-of-system-resources
+                self.repo.__del__()
+                self.console.log(f"{self.__LOG_PREFIX} Finished local git tasks")
+            return res

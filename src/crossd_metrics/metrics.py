@@ -712,7 +712,6 @@ def criticality_score(data: dict) -> float:
     # criticality_score_per_repo = {}
     # created_since, updated_since
     # repository_data = base_data.get("repository")
-    # contributor_data = base_data.get("contributors")
     # commit_data = base_data.get("commits")
     # release_data = base_data.get("release")
     # issues_data = base_data.get("issue")
@@ -1590,7 +1589,6 @@ def elephant_factor(data: dict) -> int:
     Note:
         Original author: Jacqueline Schmatz, modified by: Tobias Dam
     """
-    # contributor_data = base_data.get("contributors")
     # users_data = base_data.get("organization_users")
     # repository_data = base_data.get("repository")
     # repo_elephant_factor = {}

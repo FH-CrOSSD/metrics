@@ -5,10 +5,13 @@ from typing import Self, override
 
 from crossd_metrics.Request import Request
 from crossd_metrics.utils import handle_rate_limit
+from rich.console import Console
 
 
 class CrawlRequest(Request):
     """Retrieves information about a GitHub repository by crawling the github website."""
+
+    __LOG_PREFIX = "[light_goldenrod3 bold][CrawlRequest][/light_goldenrod3 bold]"
 
     @override
     @abstractmethod
@@ -21,6 +24,8 @@ class CrawlRequest(Request):
         self._crawl = queue.Queue()
         # indicates whether to keep running
         self.keep_running = False
+        # self.console = Console(force_terminal=False)
+        self.console = Console()
 
     @property
     def crawl(self) -> queue.Queue:
@@ -66,12 +71,15 @@ class CrawlRequest(Request):
         res = {}
         # Stores the results of the tasks
         rest_res = []
+        self.console.log(f"{self.__LOG_PREFIX} Starting with website crawling tasks")
         try:
             while item := self.crawl.get():
+                self.console.log(f"{self.__LOG_PREFIX} Executing {item.__qualname__}")
                 # Execute the task and append the result to rest_res
                 rest_res.append(item())
                 # Mark the task as done
                 self.crawl.task_done()
+                self.console.log(f"{self.__LOG_PREFIX} Finished {item.__qualname__}")
                 # Check if the queue is empty and if we should stop running
                 if not self.keep_running and self.crawl.empty():
                     break
@@ -81,4 +89,5 @@ class CrawlRequest(Request):
         # Merge the results from all tasks into a single dictionary
         for elem in rest_res:
             res.update(elem)
+        self.console.log(f"{self.__LOG_PREFIX} Finished website crawling tasks")
         return res

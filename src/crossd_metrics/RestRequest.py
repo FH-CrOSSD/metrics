@@ -4,15 +4,18 @@ import queue
 from abc import abstractmethod
 from typing import Self, override
 
-import github # type: ignore[import]
+import github  # type: ignore[import]
 from crossd_metrics.Request import Request
 from crossd_metrics.utils import handle_rate_limit
 from github import Auth, Github
-from crossd_metrics.TokenPool import TokenPool # type: ignore[import]
+from crossd_metrics.TokenPool import TokenPool  # type: ignore[import]
+from rich.console import Console
 
 
 class RestRequest(Request):
     """Retrieves information about a GitHub repository via the REST API."""
+
+    __LOG_PREFIX = "[medium_purple bold][RestRequest][/medium_purple bold]"
 
     @override
     @abstractmethod
@@ -33,6 +36,8 @@ class RestRequest(Request):
         self.keep_running = False
         # stores tasks regarding the github rest api
         self._rest = queue.Queue()
+        # self.console = Console(force_terminal=False)
+        self.console = Console()
 
     @property
     def rest(self) -> queue.Queue:
@@ -82,16 +87,19 @@ class RestRequest(Request):
         """
         # Stores the merged data from all tasks
         rest_res = []
+        self.console.log(f"{self.__LOG_PREFIX} Starting with rest tasks")
         try:
             # Process each item in the queue
             while item := self.rest.get():
+                self.console.log(f"{self.__LOG_PREFIX} Executing {item.__qualname__}")
                 rest_res.append(item())
                 # Mark the task as done
                 self.rest.task_done()
+                self.console.log(f"{self.__LOG_PREFIX} Finished {item.__qualname__}")
                 # Check if the queue is empty and stop if should not keep running
                 if not self.keep_running and self.rest.empty():
                     break
-        except queue.ShutDown: # type: ignore[attr-defined]
+        except queue.ShutDown:  # type: ignore[attr-defined]
             # Handle shutdown of the queue
             pass
 
@@ -103,4 +111,5 @@ class RestRequest(Request):
             # If rate limit is requested, get the rate limit information
             tmp = self.gh.get_rate_limit()
             res.update({"rateLimit": {"core": tmp.core.raw_data, "search": tmp.search.raw_data}})
+        self.console.log(f"{self.__LOG_PREFIX} Finished rest tasks")
         return res

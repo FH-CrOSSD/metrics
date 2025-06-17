@@ -17,7 +17,7 @@ from gql.transport.requests import RequestsHTTPTransport  # type: ignore[import]
 from graphql import build_ast_schema, parse  # type: ignore[import]
 import requests
 from rich.progress import track
-
+from rich.console import Console
 
 class GraphRequest(Request):
     """Retrieves information about a GitHub repository via the GraphQL API."""
@@ -37,6 +37,8 @@ class GraphRequest(Request):
         ds.RateLimit.nodeCount,
         ds.RateLimit.used,
     )
+
+    __LOG_PREFIX = "[deep_pink3 bold][GraphRequest][/deep_pink3 bold]"
 
     @override
     @abstractmethod
@@ -70,6 +72,8 @@ class GraphRequest(Request):
         self._paginations: list[Callable] = []  # type: ignore
         # reset the query for reuse
         self._reset_query()
+        # self.console = Console(force_terminal=True)
+        self.console = Console()
 
     @abstractmethod
     def _reset_query(self) -> None:
@@ -131,11 +135,17 @@ class GraphRequest(Request):
         except:
             pass
 
+        self.console.log(f"{self.__LOG_PREFIX} Starting with graphql tasks")
+
+        self.console.log(f"{self.__LOG_PREFIX} Querying first page")
         # Use name mangled method to avoid calling overridden method
         # execute the query
         result = self.__execute_page(rate_limit)
+        self.console.log(f"{self.__LOG_PREFIX} Finished first page")
+        page_count=1
         # Check if paginations are not needed
         if not self.paginations:
+            self.console.log(f"{self.__LOG_PREFIX} No further pages")
             return result
         while True:
             # Do pages until all paginations are done
@@ -161,16 +171,21 @@ class GraphRequest(Request):
                 break
             # Execute the methods that prepare the query for the next page
             for method in methods:
+                # self.console.log(f"{self.__LOG_PREFIX} Queueing {method.__qualname__}")
                 method()
 
+            page_count += 1
             # Execute the query for the next page
+            self.console.log(f"{self.__LOG_PREFIX} Querying page {page_count}")
             page = self.__execute_page(rate_limit)
+            self.console.log(f"{self.__LOG_PREFIX} Finished page {page_count}")
             # Calculate the rate limit information for the whole query
             if rate_limit:
                 page["rateLimit"]["cost"] += result["rateLimit"]["cost"]
                 page["rateLimit"]["nodeCount"] += result["rateLimit"]["nodeCount"]
             # Merge the results of the current page with the previous results
             result = merge_dicts(result, page)
+        self.console.log(f"{self.__LOG_PREFIX} Finished graphql tasks")
         return result
 
     def __execute(self, rate_limit: bool) -> dict:
