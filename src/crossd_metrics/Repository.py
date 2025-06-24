@@ -1375,9 +1375,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             # calculate the commit stats
             stat = commit.stats  # needs the previous commit to calculate the stats
             # check if the commit is older than the past date
-            self.console.log(
-                f"{commit.hexsha} {past} {commit.committed_datetime} {commit.committed_datetime < past}"
-            )
+            # self.console.log(
+            #     f"{commit.hexsha} {past} {commit.committed_datetime} {commit.committed_datetime < past}"
+            # )
             res.append(
                 {
                     "sha": commit.hexsha,
