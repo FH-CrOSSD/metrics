@@ -37,6 +37,7 @@ from rich.console import Console
 from github.GithubException import GithubException  # type: ignore[import]
 import datetime
 
+
 class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     """Retrieves information about a GitHub repository."""
 
@@ -1343,7 +1344,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             count += 1
         return {"workflow_runs": res}
 
-    def ask_commits_clone(self, since: datetime.datetime | relativedelta | None = relativedelta(months=12)) -> Self:
+    def ask_commits_clone(
+        self, since: datetime.datetime | relativedelta | None = relativedelta(months=12)
+    ) -> Self:
         """Queue task that clones the git repository and retrieves the commits.
 
         Returns:
@@ -1352,7 +1355,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         self.clone.put(lambda: self._get_commits_clone(since))
         return self
 
-    def _get_commits_clone(self, since: datetime.datetime|relativedelta | None = relativedelta(months=12)) -> dict:
+    def _get_commits_clone(
+        self, since: datetime.datetime | relativedelta | None = relativedelta(months=12)
+    ) -> dict:
         """Retrieves the commits of the locally cloned repository.
 
         Returns:
@@ -1365,11 +1370,14 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         self.console.log(f"{self.__LOG_PREFIX} Gettings commits")
         # get commits from the local repository
         for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
-            # calculate the commit stats
-            stat = commit.stats
-            # check if the commit is older than the past date
             if past and commit.committed_datetime < past:
                 break
+            # calculate the commit stats
+            stat = commit.stats  # needs the previous commit to calculate the stats
+            # check if the commit is older than the past date
+            self.console.log(
+                f"{commit.hexsha} {past} {commit.committed_datetime} {commit.committed_datetime < past}"
+            )
             res.append(
                 {
                     "sha": commit.hexsha,
