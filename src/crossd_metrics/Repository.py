@@ -109,6 +109,11 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             # .ask_commit_files()
             # .ask_commit_details()
             .ask_branches()
+            .ask_homepage_url()
+            .ask_pull_request_templates()
+            .ask_issue_templates()
+            .ask_code_of_conduct()
+            .ask_contributing_guidelines()
         )
         return self
 
@@ -135,6 +140,26 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             self.ds.Repository.fundingLinks.select(
                 self.ds.FundingLink.platform, self.ds.FundingLink.url
             )
+        )
+        return self
+
+    def ask_pull_request_templates(self) -> Self:
+        self.query.select(
+            self.ds.Repository.pullRequestTemplates.select(self.ds.PullRequestTemplate.filename)
+        )
+        return self
+
+    def ask_issue_templates(self) -> Self:
+        self.query.select(self.ds.Repository.issueTemplates.select(self.ds.IssueTemplate.filename))
+        return self
+
+    def ask_code_of_conduct(self) -> Self:
+        self.query.select(self.ds.Repository.codeOfConduct.select(self.ds.CodeOfConduct.url))
+        return self
+
+    def ask_contributing_guidelines(self) -> Self:
+        self.query.select(
+            self.ds.Repository.contributingGuidelines.select(self.ds.ContributingGuidelines.url)
         )
         return self
 
@@ -180,6 +205,10 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             Self: The current instance of the Repository class.
         """
         self.query.select(self.ds.Repository.isSecurityPolicyEnabled)
+        return self
+
+    def ask_homepage_url(self) -> Self:
+        self.query.select(self.ds.Repository.homepageUrl)
         return self
 
     def ask_security_advisories(
@@ -373,6 +402,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def ask_community_profile(self) -> Self:
         """Queue rest api task to retrieve the community profile of the repository.
 
+        Note:
+            Nothing is returned for forks.
         Returns:
             Self: The current instance of the Repository class.
         """
@@ -382,6 +413,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def _get_community_profile(self) -> dict:
         """Retrieves the community profile of the repository via the REST API.
 
+        Note:
+            Nothing is returned for forks.
         Returns:
             dict: Dictionary containing the community profile.
         """
@@ -1238,6 +1271,17 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 .alias(utils.get_readme_index(readme))
                 for readme in constants.readmes
             )
+        )
+        return self
+
+    def ask_issue_template_folder(self) -> Self:
+        tree_fragment = DSLInlineFragment()
+        tree_fragment.on(self.ds.Tree)
+        tree_fragment.select(self.ds.Tree.entries.select(self.ds.TreeEntry.path, self.ds.TreeEntry.extension))
+        self.query.select(
+            self.ds.Repository.object(expression="HEAD:.github/ISSUE_TEMPLATE").select(
+                tree_fragment
+            ).alias("issueTemplateFolder")
         )
         return self
 

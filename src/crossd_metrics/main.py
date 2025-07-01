@@ -15,12 +15,12 @@ console = Console(force_terminal=True)
 # console.rule("Data Retrieval")
 owner = "torvalds"
 name = "linux"
-owner = "lorabridge2"
-name = "bridge-automation-manager"
-owner = "mongodb"
-name = "mongodb-kubernetes"
-owner = "docker"
-name = "compose"
+owner = "sveltejs"
+name = "svelte"
+# owner = "mongodb"
+# name = "mongodb-kubernetes"
+# owner = "docker"
+# name = "compose"
 # owner = "llvm"
 # name = "llvm-project"
 
@@ -63,14 +63,21 @@ console.rule("commit count")
 console.log("Retrieving commits count for the last 12 months")
 repo = Repository(owner=owner, name=name)
 # count_res = repo.ask_commits_count(get_past(relativedelta(months=12)).isoformat()).execute()
-count_res = repo.ask_commits_count(commits_since_clone if commits_since_clone else get_past(relativedelta(months=12)).isoformat()).execute()
+count_res = repo.ask_commits_count(
+    commits_since_clone
+    if commits_since_clone
+    else get_past(relativedelta(months=12))
+    .replace(hour=0, minute=0, second=0, microsecond=0)
+    .isoformat()
+).execute()
 # print(count_res)
 clone_opts = {
     "bare": True,
-    "depth": count_res["repository"]["defaultBranchRef"]["last_commit"]["history"]["totalCount"],
+    "depth": count_res["repository"]["defaultBranchRef"]["last_commit"]["history"]["totalCount"]
+    + 1,  # might need the previous commit to calc the diff even if it is not in the time range
     # "filter": "blob:none",
 }
-repo = Repository(owner=owner, name=name)
+repo = Repository(owner=owner, name=name)  # , clone_opts=clone_opts)
 
 # repo.ask_commits_clone(datetime.datetime.fromisoformat(commits_since_clone))
 # res = repo.execute(rate_limit=True, verbose=True)
@@ -79,15 +86,29 @@ repo = Repository(owner=owner, name=name)
 
 console.rule("retrieving data")
 repo.ask_identifiers()
+
+repo.ask_issue_template_folder()
+repo.ask_homepage_url().ask_readme().ask_description().ask_issue_templates().ask_pull_request_templates().ask_code_of_conduct().ask_contributing_guidelines().ask_security_policy()
+# repo.ask_commits_clone(
+#     since=commits_since_clone
+#     or get_past(relativedelta(months=12)).replace(hour=0, minute=0, second=0, microsecond=0)
+# )
+res = repo.execute(rate_limit=True, verbose=True)
+console.print(res)
+exit()
+
 c_available = repo.contributors_available()
-if c_available:
+if c_available and False:
     repo.clone_opts = clone_opts
     repo.ask_contributors()
     repo.ask_commits_clone()
 else:
     repo.ask_commits(details=False, diff=False, since=commits_since)
     # repo.ask_commits_clone(since=None)
-    repo.ask_commits_clone()
+    repo.ask_commits_clone(
+        since=commits_since_clone
+        or get_past(relativedelta(months=12)).replace(hour=0, minute=0, second=0, microsecond=0)
+    )
 
 (
     repo.ask_dependencies_sbom()
