@@ -446,26 +446,47 @@ def github_community_health_percentage(data: dict) -> dict[str, float | bool]:
     Note:
         Original author: Jacqueline Schmatz, modified by: Tobias Dam
     """
-    data = data["community_profile"]
-    score = data.get("health_percentage")
-    description = bool(data.get("description"))
-    documentation = bool(data.get("documentation"))
-    code_of_conduct = bool(data.get("files").get("code_of_conduct"))
-    contributing = bool(data.get("files").get("contributing"))
-    issue_template = bool(data.get("files").get("issue_template"))
-    pull_request_template = bool(data.get("files").get("pull_request_template"))
-    license_bool = bool(data.get("files").get("license"))
-    readme = bool(data.get("files").get("readme"))
+    # data = data["community_profile"]
+    # score = data.get("health_percentage")
+    # description = bool(data.get("description"))
+    # documentation = bool(data.get("documentation"))
+    # code_of_conduct = bool(data.get("files").get("code_of_conduct"))
+    # contributing = bool(data.get("files").get("contributing"))
+    # issue_template = bool(data.get("files").get("issue_template"))
+    # pull_request_template = bool(data.get("files").get("pull_request_template"))
+    # license_bool = bool(data.get("files").get("license"))
+    # readme = bool(data.get("files").get("readme"))
+
+    security_policy = bool(data.get("repository").get("isSecurityPolicyEnabled"))
+    license_bool = bool(data.get("repository").get("licenseInfo"))
+    contributing = bool(data.get("repository").get("contributingGuidelines"))
+    code_of_conduct = bool(data.get("repository").get("codeOfConduct"))
+    description = bool(data.get("repository").get("description"))
+    documentation = bool(data.get("repository").get("homepageUrl"))
+    pull_request_template = bool(data.get("repository").get("pullRequestTemplates"))
+    readme = any([data["repository"][utils.get_readme_index(elem)] for elem in constants.readmes])
+    issue_template = bool(data.get("repository").get("issueTemplates"))
+    if not issue_template:
+        if folder := data.get("repository").get("issueTemplateFolder"):
+            counter = collections.Counter(
+                entry["extension"]
+                for entry in folder["entries"]
+                if entry["path"] != ".github/ISSUE_TEMPLATE/config.yml"
+            )
+            issue_template = counter[".yml"] + counter[".md"] > 0
+
     info_list = [
         description,
-        documentation,
+        # documentation,
         code_of_conduct,
         contributing,
         issue_template,
         pull_request_template,
         license_bool,
         readme,
+        security_policy,
     ]
+    print(info_list)
     true_count = info_list.count(True)
     false_count = info_list.count(False)
     if sum(info_list) > 0:
@@ -473,7 +494,8 @@ def github_community_health_percentage(data: dict) -> dict[str, float | bool]:
     else:
         custom_health_percentage = None
     infos = {
-        "community_health_score": score,
+        # "community_health_score": score,
+        "community_health_score": None,
         "custom_health_score": custom_health_percentage,
         "true_count": true_count,
         "false_count": false_count,
@@ -485,6 +507,7 @@ def github_community_health_percentage(data: dict) -> dict[str, float | bool]:
         "pull_request_template": pull_request_template,
         "license": license_bool,
         "readme": readme,
+        "security_policy": security_policy,
     }
     return infos
 

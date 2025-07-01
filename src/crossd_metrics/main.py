@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding=utf-8 -*-
 
-from crossd_metrics.metrics import get_metrics, dependency_count
+from crossd_metrics.metrics import get_metrics, dependency_count, github_community_health_percentage
 from crossd_metrics.Repository import Repository
 from crossd_metrics.User import User
 from crossd_metrics.MultiUser import MultiUser
@@ -17,6 +17,8 @@ owner = "torvalds"
 name = "linux"
 owner = "sveltejs"
 name = "svelte"
+# owner="tobiasdam"
+# name="test"
 # owner = "mongodb"
 # name = "mongodb-kubernetes"
 # owner = "docker"
@@ -87,7 +89,7 @@ repo = Repository(owner=owner, name=name)  # , clone_opts=clone_opts)
 console.rule("retrieving data")
 repo.ask_identifiers()
 
-repo.ask_issue_template_folder()
+repo.ask_issue_template_folder().ask_license()
 repo.ask_homepage_url().ask_readme().ask_description().ask_issue_templates().ask_pull_request_templates().ask_code_of_conduct().ask_contributing_guidelines().ask_security_policy()
 # repo.ask_commits_clone(
 #     since=commits_since_clone
@@ -95,6 +97,7 @@ repo.ask_homepage_url().ask_readme().ask_description().ask_issue_templates().ask
 # )
 res = repo.execute(rate_limit=True, verbose=True)
 console.print(res)
+print(github_community_health_percentage(res))
 exit()
 
 c_available = repo.contributors_available()
