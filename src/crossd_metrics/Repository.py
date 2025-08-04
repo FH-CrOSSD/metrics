@@ -162,6 +162,12 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             self.ds.Repository.contributingGuidelines.select(self.ds.ContributingGuidelines.url)
         )
         return self
+    
+    def ask_repo_empty(self) -> Self:
+        self.query.select(
+            self.ds.Repository.isEmpty
+        )
+        return self
 
     def ask_license(self) -> Self:
         """Queue graphql task to retrieve the repository license information.
@@ -1413,35 +1419,36 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
 
         self.console.log(f"{self.__LOG_PREFIX} Gettings commits")
         # get commits from the local repository
-        for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
-            if past and commit.committed_datetime < past:
-                break
-            # calculate the commit stats
-            stat = commit.stats  # needs the previous commit to calculate the stats
-            # check if the commit is older than the past date
-            # self.console.log(
-            #     f"{commit.hexsha} {past} {commit.committed_datetime} {commit.committed_datetime < past}"
-            # )
-            res.append(
-                {
-                    "sha": commit.hexsha,
-                    "author": {"name": commit.author.name, "email": commit.author.email},
-                    "committer": {
-                        "name": commit.committer.name,
-                        "email": commit.committer.email,
-                    },
-                    "authored_iso": commit.authored_datetime.isoformat(),
-                    "committed_iso": commit.committed_datetime.isoformat(),
-                    "message": commit.message,
-                    "has_signature": bool(commit.gpgsig),
-                    "insertions": stat.total["insertions"],
-                    "deletions": stat.total["deletions"],
-                    "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
-                    "files": list(stat.files.keys()),
-                }
-            )
-            if i % 200 == 0:
-                self.console.log(f"{self.__LOG_PREFIX} Currently at commit # {i}")
+        if self.repo.active_branch.is_valid():
+            for i, commit in enumerate(self.repo.iter_commits(self.repo.active_branch.name)):
+                if past and commit.committed_datetime < past:
+                    break
+                # calculate the commit stats
+                stat = commit.stats  # needs the previous commit to calculate the stats
+                # check if the commit is older than the past date
+                # self.console.log(
+                #     f"{commit.hexsha} {past} {commit.committed_datetime} {commit.committed_datetime < past}"
+                # )
+                res.append(
+                    {
+                        "sha": commit.hexsha,
+                        "author": {"name": commit.author.name, "email": commit.author.email},
+                        "committer": {
+                            "name": commit.committer.name,
+                            "email": commit.committer.email,
+                        },
+                        "authored_iso": commit.authored_datetime.isoformat(),
+                        "committed_iso": commit.committed_datetime.isoformat(),
+                        "message": commit.message,
+                        "has_signature": bool(commit.gpgsig),
+                        "insertions": stat.total["insertions"],
+                        "deletions": stat.total["deletions"],
+                        "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
+                        "files": list(stat.files.keys()),
+                    }
+                )
+                if i % 200 == 0:
+                    self.console.log(f"{self.__LOG_PREFIX} Currently at commit # {i}")
         self.console.log(f"{self.__LOG_PREFIX} Finished getting commits")
         return {"commits": res}
 
@@ -1583,19 +1590,23 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             # if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
             #     "hasNextPage" if after else "hasPreviousPage"
             # ]:
-            if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
-                "hasNextPage"
-            ]:
-                # if not before:
-                res.append(
-                    lambda: self.ask_commits(
-                        after=data["repository"]["defaultBranchRef"]["last_commit"]["history"][
-                            "pageInfo"
-                        ]["endCursor"],
-                        details=details,
-                        diff=diff,
+            try:
+                if data["repository"]["defaultBranchRef"]["last_commit"]["history"]["pageInfo"][
+                    "hasNextPage"
+                ]:
+                    # if not before:
+                    res.append(
+                        lambda: self.ask_commits(
+                            after=data["repository"]["defaultBranchRef"]["last_commit"]["history"][
+                                "pageInfo"
+                            ]["endCursor"],
+                            details=details,
+                            diff=diff,
+                        )
                     )
-                )
+            except TypeError:
+                # same as has no next Page (occurs when repo isEmpty)
+                pass
                 # else:
                 #     res.append(
                 #         lambda: self.ask_commits(
