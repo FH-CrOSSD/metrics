@@ -469,9 +469,12 @@ def is_branch_active(branch: dict) -> bool:
 
 
 def get_active_branches(branches: list[dict]) -> list[dict]:
+    # elem[0]
     return {
         branch["branch"]["name"]: (
-            elem[0] if (elem := branch["branch"]["associatedPullRequests"]["nodes"]) else {}
+            next(filter(None, elem))
+            if (elem := branch["branch"]["associatedPullRequests"]["nodes"])
+            else {}
         ).get("state", "")
         for branch in branches
         if is_branch_active(branch)
@@ -479,9 +482,12 @@ def get_active_branches(branches: list[dict]) -> list[dict]:
 
 
 def get_stale_branches(branches: list[dict]) -> list[dict]:
+    # elem[0]
     return {
         branch["branch"]["name"]: (
-            elem[0] if (elem := branch["branch"]["associatedPullRequests"]["nodes"]) else {}
+            next(filter(None, elem))
+            if (elem := branch["branch"]["associatedPullRequests"]["nodes"])
+            else {}
         ).get("state", "")
         for branch in branches
         if not is_branch_active(branch)
