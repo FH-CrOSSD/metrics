@@ -801,6 +801,7 @@ def criticality_score(data: dict) -> float:
             # commit_date = commit.get("commit").get("author").get("date")
             commit_date = commit.get("authored_iso")
             commit_date = datetime.datetime.fromisoformat(commit_date)  # , "%Y-%m-%dT%H:%M:%SZ")
+            commit_date = commit_date.astimezone(datetime.timezone.utc)
             repo_commit_dates.append(commit_date)
         # except KeyError:
         #     continue
