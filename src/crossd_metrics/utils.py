@@ -169,6 +169,7 @@ def simple_pagination(
 
         # if selection["pageInfo"]["hasNextPage"]:
         # if there is a next page, return the method with the end cursor as argument
+        print("method:", method, type(method))
         return [
             lambda: method(
                 after=selection["pageInfo"]["endCursor"],
