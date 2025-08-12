@@ -44,7 +44,7 @@ class MultiUser(User):
             Self: The current instance of the MultiUser class.
         """
         for login in self.login:
-            self._get_organizations(login)
+            self._get_organizations(login, after)
         return self
 
     def _get_organizations(self, login: str, after: typing.Optional[str] = None) -> Self:
