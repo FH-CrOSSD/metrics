@@ -77,7 +77,7 @@ class MultiUser(User):
             )
         )
 
-        def tmp(self, after: typing.Optional[str] = None) -> None:
+        def tmp(after: typing.Optional[str] = None) -> None:
             """Helper function to handle pagination for getting organizations.
 
             Args:
@@ -101,7 +101,7 @@ class MultiUser(User):
             dict: The data retrieved by the executed tasks.
         """
         # Get queries for each user
-        query_parts = [*self.query.values()]
+        query_parts = [part for part in self.query.values() if part.selection_set.selections]
         if rate_limit:
             query_parts.append(self._RATELIMIT_QUERY)
         query = dsl_gql(DSLQuery(*query_parts))
