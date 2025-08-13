@@ -152,6 +152,7 @@ def simple_pagination(
             list[Callable] | Callable | None: A list of methods or a single method to be called for the next page or None if no pagination is needed.
         """
         selection: dict = {}
+        print(selector)
         # if the selector is a string, use it to check for pagination
         if type(selector) == str:
             selection = data["repository"][selector]
@@ -162,9 +163,11 @@ def simple_pagination(
             for elem in selector:
                 selection = selection[elem]
         if not selection["pageInfo"]["hasNextPage"]:
+            print("no next page")
             return None
         if not all(_filter(data) for _filter in filters):
             # if the filters are not met, return None
+            print("filters not fulfilled")
             return None
 
         # if selection["pageInfo"]["hasNextPage"]:
