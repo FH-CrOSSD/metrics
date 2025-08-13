@@ -1,6 +1,6 @@
 [project]
 name = "crossd_metrics"
-version = "2.3.5"
+version = "2.3.7"
 description = ""
 authors = [
     {name = "", email = ""},
