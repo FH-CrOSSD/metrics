@@ -486,7 +486,6 @@ def github_community_health_percentage(data: dict) -> dict[str, float | bool]:
         readme,
         security_policy,
     ]
-    print(info_list)
     true_count = info_list.count(True)
     false_count = info_list.count(False)
     if sum(info_list) > 0:

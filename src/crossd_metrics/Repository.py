@@ -43,7 +43,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
 
     __LOG_PREFIX = "[dark_sea_green4 bold][Repository][/dark_sea_green4 bold]"
 
-    def __init__(self, owner: str, name: str, clone_opts: dict = {}):
+    def __init__(self, owner: str, name: str, clone_opts: dict = {}, page_size: int = 100):
         """Initializes the Repository object.
 
         Args:
@@ -62,6 +62,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # self.since = datetime.timedelta(days=6 * 30)
         # self.since = None
         super(Repository, self).__init__(owner=owner, name=name)
+        self.page_size = page_size
         self.clone_opts = clone_opts
         self.keep_running = True
 
@@ -162,11 +163,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             self.ds.Repository.contributingGuidelines.select(self.ds.ContributingGuidelines.url)
         )
         return self
-    
+
     def ask_repo_empty(self) -> Self:
-        self.query.select(
-            self.ds.Repository.isEmpty
-        )
+        self.query.select(self.ds.Repository.isEmpty)
         return self
 
     def ask_license(self) -> Self:
@@ -279,7 +278,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # can not be filtered by repo
         self.query.select(
             self.ds.Repository.hasVulnerabilityAlertsEnabled,
-            self.ds.Repository.vulnerabilityAlerts(first=100, after=after).select(
+            self.ds.Repository.vulnerabilityAlerts(first=self.page_size, after=after).select(
                 self.ds.RepositoryVulnerabilityAlertConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
                 ),
@@ -699,7 +698,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         # Repository(owner="vercel", name="next.js")
         # Repository(owner="vercel", name="vercel")
         self.query.select(
-            self.ds.Repository.releases(first=100, after=after, orderBy=asdict(orderBy)).select(
+            self.ds.Repository.releases(
+                first=self.page_size, after=after, orderBy=asdict(orderBy)
+            ).select(
                 self.ds.ReleaseConnection.totalCount,
                 self.ds.ReleaseConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
@@ -797,7 +798,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             .alias(f"issue{number}")
             .select(
                 self.ds.Issue.createdAt,
-                self.ds.Issue.comments(first=100, after=after, orderBy=asdict(orderBy)).select(
+                self.ds.Issue.comments(
+                    first=self.page_size, after=after, orderBy=asdict(orderBy)
+                ).select(
                     self.ds.IssueCommentConnection.totalCount,
                     self.ds.IssueCommentConnection.pageInfo.select(
                         self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
@@ -864,7 +867,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         """
         # NOTE: Issues via Graphql only contain issues (REST API includes pull requests)
         self.query.select(
-            self.ds.Repository.issues(first=100, after=after, orderBy=asdict(orderBy)).select(
+            self.ds.Repository.issues(
+                first=self.page_size, after=after, orderBy=asdict(orderBy)
+            ).select(
                 self.ds.IssueConnection.totalCount,
                 self.ds.IssueConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
@@ -1010,7 +1015,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             Self: The current instance of the Repository class.
         """
         self.query.select(
-            self.ds.Repository.forks(first=100, after=after, orderBy=asdict(orderBy)).select(
+            self.ds.Repository.forks(
+                first=self.page_size, after=after, orderBy=asdict(orderBy)
+            ).select(
                 self.ds.RepositoryConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
                 ),
@@ -1071,7 +1078,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             .select(
                 self.ds.PullRequest.createdAt,
                 self.ds.PullRequest.comments(
-                    first=100, after=after, orderBy=asdict(orderBy)
+                    first=self.page_size, after=after, orderBy=asdict(orderBy)
                 ).select(
                     self.ds.IssueCommentConnection.totalCount,
                     self.ds.IssueCommentConnection.pageInfo.select(
@@ -1137,7 +1144,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
             Self: The current instance of the Repository class.
         """
         self.query.select(
-            self.ds.Repository.pullRequests(first=100, after=after, orderBy=asdict(orderBy)).select(
+            self.ds.Repository.pullRequests(
+                first=self.page_size, after=after, orderBy=asdict(orderBy)
+            ).select(
                 self.ds.PullRequestConnection.totalCount,
                 self.ds.PullRequestConnection.pageInfo.select(
                     self.ds.PageInfo.hasNextPage, self.ds.PageInfo.endCursor
@@ -1283,11 +1292,13 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def ask_issue_template_folder(self) -> Self:
         tree_fragment = DSLInlineFragment()
         tree_fragment.on(self.ds.Tree)
-        tree_fragment.select(self.ds.Tree.entries.select(self.ds.TreeEntry.path, self.ds.TreeEntry.extension))
+        tree_fragment.select(
+            self.ds.Tree.entries.select(self.ds.TreeEntry.path, self.ds.TreeEntry.extension)
+        )
         self.query.select(
-            self.ds.Repository.object(expression="HEAD:.github/ISSUE_TEMPLATE").select(
-                tree_fragment
-            ).alias("issueTemplateFolder")
+            self.ds.Repository.object(expression="HEAD:.github/ISSUE_TEMPLATE")
+            .select(tree_fragment)
+            .alias("issueTemplateFolder")
         )
         return self
 
@@ -1443,7 +1454,9 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                         "has_signature": bool(commit.gpgsig),
                         "insertions": stat.total["insertions"],
                         "deletions": stat.total["deletions"],
-                        "co_authors": [{"name": x.name, "email": x.email} for x in commit.co_authors],
+                        "co_authors": [
+                            {"name": x.name, "email": x.email} for x in commit.co_authors
+                        ],
                         "files": list(stat.files.keys()),
                     }
                 )
@@ -1485,7 +1498,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     .select(
                         self.ds.Commit.history(
                             # **{"first" if not before else "last": index},
-                            first=100,
+                            first=self.page_size,
                             after=after,
                             since=since,
                             # before=before,
@@ -1712,7 +1725,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         """
         self.query.select(
             # get branches via refPrefix
-            self.ds.Repository.refs(first=100, refPrefix="refs/heads/", after=after)
+            self.ds.Repository.refs(first=self.page_size, refPrefix="refs/heads/", after=after)
             .alias("branches")
             .select(
                 self.ds.RefConnection.totalCount,
@@ -1788,7 +1801,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 self.clone.shutdown()  # type: ignore[attr-defined]
                 cloneres = clone.result(timeout=threading.TIMEOUT_MAX)
             except Exception as e:
-                print(e)
+                self.console.log(e)
                 # close queues on exception
                 self.rest.shutdown()  # type: ignore[attr-defined]
                 self.crawl.shutdown()  # type: ignore[attr-defined]

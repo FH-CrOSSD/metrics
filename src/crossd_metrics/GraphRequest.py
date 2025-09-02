@@ -18,6 +18,8 @@ from graphql import build_ast_schema, parse  # type: ignore[import]
 import requests
 from rich.progress import track
 from rich.console import Console
+import urllib3
+
 
 class GraphRequest(Request):
     """Retrieves information about a GitHub repository via the GraphQL API."""
@@ -142,7 +144,7 @@ class GraphRequest(Request):
         # execute the query
         result = self.__execute_page(rate_limit)
         self.console.log(f"{self.__LOG_PREFIX} Finished first page")
-        page_count=1
+        page_count = 1
         # Check if paginations are not needed
         if not self.paginations:
             self.console.log(f"{self.__LOG_PREFIX} No further pages")
@@ -216,9 +218,9 @@ class GraphRequest(Request):
             # Execute the GraphQL query
             return self.__execute(rate_limit)
         except requests.exceptions.ChunkedEncodingError as cee:
-            print("cee")
+            self.console.log("requests.exceptions.ChunkedEncodingError")
             if tries < MAX_RETRIES_CHUNKED_ERROR:
-                print("retry")
+                self.console.log(f"retry #{tries + 1}")
                 return self.__execute_page(rate_limit, tries=tries + 1)
             else:
                 raise cee
@@ -226,7 +228,7 @@ class GraphRequest(Request):
             # Check if the error is a rate limit error
             if tse.code in [403, 429]:
                 # wait for the rate limit to reset
-                print(tse)
+                self.console.log(tse)
                 return handle_rate_limit(
                     self.transport.response_headers.get("x-ratelimit-reset"),
                     lambda: self.__execute(rate_limit),
