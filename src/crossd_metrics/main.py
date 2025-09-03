@@ -12,6 +12,8 @@ from dateutil.relativedelta import relativedelta
 import datetime
 import requests
 import urllib3
+import gql.transport.exceptions  # type: ignore[import]
+
 
 console = Console(force_terminal=True)
 # console.rule("Data Retrieval")
@@ -27,8 +29,8 @@ name = "svelte"
 # name = "mongodb-kubernetes"
 owner = "Make-O-Matic"
 name = "MOM-Base"
-owner = "golang"
-name = "go"
+owner = "sdras"
+name = "awesome-actions"
 # owner = "llvm"
 # name = "llvm-project"
 
@@ -73,13 +75,17 @@ console.rule("commit count")
 console.log("Retrieving commits count for the last 12 months")
 repo = Repository(owner=owner, name=name)
 # count_res = repo.ask_commits_count(get_past(relativedelta(months=12)).isoformat()).execute()
-count_res = repo.ask_repo_empty().ask_commits_count(
-    commits_since_clone
-    if commits_since_clone
-    else get_past(relativedelta(months=12))
-    .replace(hour=0, minute=0, second=0, microsecond=0)
-    .isoformat()
-).execute()
+count_res = (
+    repo.ask_repo_empty()
+    .ask_commits_count(
+        commits_since_clone
+        if commits_since_clone
+        else get_past(relativedelta(months=12))
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
+    .execute()
+)
 print(count_res)
 if not count_res["repository"]["isEmpty"]:
     clone_opts = {
@@ -91,6 +97,7 @@ if not count_res["repository"]["isEmpty"]:
 repo = Repository(owner=owner, name=name)  # , clone_opts=clone_opts)
 c_available = repo.contributors_available()
 c_available = False
+
 
 def ask_stuff():
     # repo.ask_commits_clone(datetime.datetime.fromisoformat(commits_since_clone))
@@ -112,7 +119,6 @@ def ask_stuff():
     # print(github_community_health_percentage(res))
     # exit()
 
-    
     if c_available and False:
         repo.clone_opts = clone_opts
         repo.ask_contributors()
@@ -126,7 +132,7 @@ def ask_stuff():
         )
 
     (
-        repo.ask_dependencies_sbom()    
+        repo.ask_dependencies_sbom()
         # .ask_dependencies_crawl()
         # .ask_dependencies()
         .ask_repo_empty()
@@ -160,9 +166,10 @@ def ask_stuff():
         .ask_branches()
     )
 
+
 ask_stuff()
-res=None
-for page_size in (100,70,50,30):
+res = None
+for page_size in (100, 70, 50, 30):
     console.log(f"using page size {page_size}")
     repo = Repository(owner=owner, name=name, page_size=page_size)
     ask_stuff()
@@ -249,7 +256,20 @@ for user in res["contributors"]["users"]:
         users.append(user["login"])
     if len(users) % 200 == 0:
         print(users)
-        tmp = merge_dicts(tmp, MultiUser(login=users).ask_organizations().execute(rate_limit=True))
+        gql_users = {}
+        try:
+            gql_users = MultiUser(login=users).ask_organizations().execute(rate_limit=True)
+        except gql.transport.exceptions.TransportQueryError as tqe:
+            if tqe.errors and tqe.errors[0]["type"] == "RESOURCE_LIMITS_EXCEEDED":
+                console.log("RESOURCE_LIMITS_EXCEEDED - trying with smaller group size")
+                gql_users = merge_dicts(
+                    MultiUser(login=users[:100]).ask_organizations().execute(rate_limit=True),
+                    MultiUser(login=users[100:]).ask_organizations().execute(rate_limit=True),
+                )
+            else:
+                gql_users = {key: value for key, value in tqe.data.items() if value is not None}
+        tmp = merge_dicts(tmp, gql_users)
+        # tmp = merge_dicts(tmp, MultiUser(login=users).ask_organizations().execute(rate_limit=True))
         users = []
 else:
     tmp = merge_dicts(tmp, MultiUser(login=users).ask_organizations().execute(rate_limit=True))

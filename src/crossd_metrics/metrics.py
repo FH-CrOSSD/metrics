@@ -994,9 +994,11 @@ def project_velocity(data: dict) -> dict[str, float]:
             closed_issues += 1
             closed_at = issue["node"]["closedAt"]
             if closed_at:
+                # in very rare cases closed pull request do not have a closed date
+                # e.g. https://github.com/cypress-io/cypress/pull/4871 via graphql
                 closed_at = datetime.datetime.strptime(closed_at, "%Y-%m-%dT%H:%M:%SZ")
-            date_diff = closed_at - created_at
-            date_diffs.append(date_diff.days)
+                date_diff = closed_at - created_at
+                date_diffs.append(date_diff.days)
     # pull_count = pull_issue_list.count(True)
     pull_count = len(pulls)
     no_pull_count = len(issues)
