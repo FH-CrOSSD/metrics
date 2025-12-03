@@ -29,8 +29,8 @@ name = "svelte"
 # name = "mongodb-kubernetes"
 owner = "Make-O-Matic"
 name = "MOM-Base"
-owner = "sdras"
-name = "awesome-actions"
+owner = "lorabridge"
+name = "lorabridge"
 # owner = "llvm"
 # name = "llvm-project"
 
@@ -155,7 +155,7 @@ def ask_stuff():
         .ask_releases()
         # .ask_releases_crawl()
         .ask_security_advisories()
-        .ask_issues()
+        .ask_issues(comment_body=False)
         .ask_forks()
         # .ask_workflow_runs()
         # .ask_dependabot_alerts()

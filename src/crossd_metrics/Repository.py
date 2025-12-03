@@ -779,6 +779,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
     def ask_issue_comments(
         self,
         number: str | int,
+        comment_body: bool = False,
         after: typing.Optional[str] = None,
         orderBy: IssueCommentOrder = IssueCommentOrder("DESC", "UPDATED_AT"),
         since: relativedelta | None = relativedelta(months=3),
@@ -809,6 +810,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                         self.ds.IssueCommentEdge.cursor,
                         self.ds.IssueCommentEdge.node.select(
                             self.ds.IssueComment.id,
+                            self.ds.IssueComment.body if comment_body else self.ds.IssueComment.id,
                             self.ds.IssueComment.createdAt,
                             self.ds.IssueComment.updatedAt,
                         ),
@@ -854,6 +856,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         after: typing.Optional[str] = None,
         orderBy: IssueOrder = IssueOrder("DESC", "UPDATED_AT"),
         since: relativedelta | None = relativedelta(months=6),
+        comment_body: bool = False,
     ) -> Self:
         """Queue graphql task to retrieve the issues of the repository.
         Also queues a pagination function retrieving the comments of the issues.
@@ -921,7 +924,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     Callable: Function that queues the retrieval of the comments of the issue
                 """
                 # copy by value
-                return lambda: self.ask_issue_comments(str(num))
+                return lambda: self.ask_issue_comments(str(num),comment_body=comment_body)
 
             # get comment retrieval functions for the newly retrieved issues
             tmp = [
