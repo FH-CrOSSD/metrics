@@ -857,6 +857,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
         orderBy: IssueOrder = IssueOrder("DESC", "UPDATED_AT"),
         since: relativedelta | None = relativedelta(months=6),
         comment_body: bool = False,
+        issue_body: bool = False
     ) -> Self:
         """Queue graphql task to retrieve the issues of the repository.
         Also queues a pagination function retrieving the comments of the issues.
@@ -885,6 +886,7 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                         self.ds.Issue.createdAt,
                         self.ds.Issue.number,
                         self.ds.Issue.state,
+                        self.ds.Issue.body if issue_body else self.ds.Issue.number,
                         # self.ds.Issue.closedByPullRequestsReferences(first=0).select(
                         #     self.ds.PullRequestConnection.totalCount
                         # ),
@@ -954,7 +956,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                     res.append(
                         lambda: self.ask_issues(
                             after=data["repository"]["issues"]["pageInfo"]["endCursor"],
-                            comment_body=comment_body
+                            comment_body=comment_body,
+                            issue_body=issue_body
                         )
                     )
             return res
