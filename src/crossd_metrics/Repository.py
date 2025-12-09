@@ -953,7 +953,8 @@ class Repository(GraphRequest, RestRequest, CrawlRequest, CloneRequest):
                 )(data):
                     res.append(
                         lambda: self.ask_issues(
-                            after=data["repository"]["issues"]["pageInfo"]["endCursor"]
+                            after=data["repository"]["issues"]["pageInfo"]["endCursor"],
+                            comment_body=comment_body
                         )
                     )
             return res
