@@ -1,0 +1,84 @@
+name: Tag from pyproject.toml
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # required to fetch tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install packaging toml
+
+      - name: Determine versions
+        id: versions
+        run: |
+          set -e
+
+          # Read version from pyproject.toml
+          PYPROJECT_VERSION=$(python - <<'EOF'
+          import toml
+          print(toml.load("pyproject.toml")["project"]["version"])
+          EOF
+          )
+
+          NEW_TAG="v${PYPROJECT_VERSION}"
+
+          # Get latest git tag (empty if none)
+          LATEST_TAG=$(git tag --sort=-v:refname | head -n 1 || true)
+
+          echo "pyproject_version=$PYPROJECT_VERSION" >> $GITHUB_OUTPUT
+          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare
+        run: |
+          set -e
+
+          LATEST_TAG="${{ steps.versions.outputs.latest_tag }}"
+          NEW_TAG="${{ steps.versions.outputs.new_tag }}"
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "create=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          python - <<EOF
+          from packaging.version import Version
+
+          latest = Version("${LATEST_TAG}".lstrip("v"))
+          new = Version("${NEW_TAG}".lstrip("v"))
+
+          print("Latest:", latest)
+          print("New:", new)
+
+          if new > latest:
+              print("create=true")
+          else:
+              print("create=false")
+          EOF >> $GITHUB_OUTPUT
+
+      - name: Create Git tag
+        if: steps.compare.outputs.create == 'true'
+        run: |
+          git tag ${{ steps.versions.outputs.new_tag }}
+          git push origin ${{ steps.versions.outputs.new_tag }}
