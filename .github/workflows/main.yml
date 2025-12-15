@@ -54,28 +54,27 @@ jobs:
         run: |
           set -e
 
-          LATEST_TAG="${{ steps.versions.outputs.latest_tag }}"
-          NEW_TAG="${{ steps.versions.outputs.new_tag }}"
-
-          if [ -z "$LATEST_TAG" ]; then
-            echo "create=true" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          python - <<EOF
+          python - <<'EOF'
           from packaging.version import Version
+          import os
 
-          latest = Version("${LATEST_TAG}".lstrip("v"))
-          new = Version("${NEW_TAG}".lstrip("v"))
+          latest_tag = "${{ steps.versions.outputs.latest_tag }}"
+          new_tag = "${{ steps.versions.outputs.new_tag }}"
 
-          print("Latest:", latest)
-          print("New:", new)
+          output_file = os.environ["GITHUB_OUTPUT"]
 
-          if new > latest:
-              print("create=true")
-          else:
-              print("create=false")
-          EOF >> $GITHUB_OUTPUT
+          # If no existing tag, always create
+          if not latest_tag:
+              with open(output_file, "a") as f:
+                  f.write("create=true\n")
+              exit(0)
+
+          latest = Version(latest_tag.lstrip("v"))
+          new = Version(new_tag.lstrip("v"))
+
+          with open(output_file, "a") as f:
+              f.write(f"create={'true' if new > latest else 'false'}\n")
+          EOF
 
       - name: Create Git tag
         if: steps.compare.outputs.create == 'true'
