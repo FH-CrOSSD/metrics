@@ -29,8 +29,8 @@ name = "svelte"
 # name = "mongodb-kubernetes"
 owner = "Make-O-Matic"
 name = "MOM-Base"
-owner = "lorabridge"
-name = "lorabridge"
+owner = "microsoft"
+name = "vscode"
 # owner = "llvm"
 # name = "llvm-project"
 
@@ -155,7 +155,7 @@ def ask_stuff():
         .ask_releases()
         # .ask_releases_crawl()
         .ask_security_advisories()
-        .ask_issues(comment_body=False)
+        .ask_issues(comment_body=True, issue_body=True)
         .ask_forks()
         # .ask_workflow_runs()
         # .ask_dependabot_alerts()
@@ -193,6 +193,12 @@ for page_size in (100, 70, 50, 30):
                     # ask_stuff()
                     # res = repo.execute(rate_limit=True, verbose=True)
         raise re
+    except gql.transport.exceptions.TransportQueryError as tqe:
+        if tqe.errors and tqe.errors[0]["type"] == "RESOURCE_LIMITS_EXCEEDED":
+            console.log("RESOURCE_LIMITS_EXCEEDED - trying with smaller page size")
+            continue
+        else:
+            raise tqe
 else:
     console.log("attempts with reduced page sizes failed")
     console.log("aborting")

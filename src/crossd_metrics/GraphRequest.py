@@ -10,7 +10,7 @@ import gql  # type: ignore[import]
 import gql.transport  # type: ignore[import]
 import gql.transport.exceptions  # type: ignore[import]
 from crossd_metrics.Request import Request
-from crossd_metrics.utils import handle_rate_limit, merge_dicts
+from crossd_metrics.utils import handle_rate_limit, merge_dicts, is_rate_limit_error
 from gql import Client
 from gql.dsl import DSLQuery, DSLSchema, DSLType, dsl_gql  # type: ignore[import]
 from gql.transport.requests import RequestsHTTPTransport  # type: ignore[import]
@@ -271,6 +271,13 @@ class GraphRequest(Request):
                 else:
                     # raise the error if the retry limit is reached
                     raise tqe
+            elif is_rate_limit_error(tqe):
+                # handle rate limit errors
+                self.console.log(tqe)
+                return handle_rate_limit(
+                    self.transport.response_headers.get("x-ratelimit-reset"),
+                    lambda: self.__execute(rate_limit),
+                )
             else:
                 # raise other errors
                 raise tqe

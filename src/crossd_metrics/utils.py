@@ -14,6 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.request import urlopen, Request
 from dateutil.relativedelta import relativedelta
+import gql  # type: ignore[import]
 
 """Various utility functions and classes for handling GitHub data."""
 
@@ -77,7 +78,9 @@ def merge_dicts(orig: dict | None, *args: dict | None) -> dict:
                 merged[key] = new[key]
             else:
                 # if the key is in both dictionaries, check the types mismatch
-                if type(merged[key]) in [dict, list] and type(merged[key]) != type(new[key]):
+                if type(merged[key]) in [dict, list] and type(merged[key]) != type(
+                    new[key]
+                ):
                     # if old is dict or list and new is not (e.g. None or other), just overwrite value
                     merged[key] = new[key]
                 else:
@@ -95,7 +98,9 @@ def merge_dicts(orig: dict | None, *args: dict | None) -> dict:
 
 
 def handle_rate_limit(
-    timestamp: str | int, func: Callable, console: typing.Optional[rich.console.Console] = None
+    timestamp: str | int,
+    func: Callable,
+    console: typing.Optional[rich.console.Console] = None,
 ) -> typing.Any:
     """Helper function for checking rate limit and sleeping for the specified time.
 
@@ -115,13 +120,22 @@ def handle_rate_limit(
     # add a little grace period
     sleep_time += 5
     if console:
-        console.log("rate limit exceeded - sleeping for " + str(sleep_time) + " seconds")
+        console.log(
+            "rate limit exceeded - sleeping for " + str(sleep_time) + " seconds"
+        )
     else:
         print("rate limit exceeded - sleeping for " + str(sleep_time) + " seconds")
     time.sleep(sleep_time)
     # if rate limit is still exceed for whatever reason, crash and let the task queue retry later
     # execute the supplied function and return the result
     return func()
+
+
+def is_rate_limit_error(e: gql.transport.exceptions.TransportQueryError) -> bool:
+    return any(
+        (err.get("code") == "graphql_rate_limit" or err.get("type") == "RATE_LIMIT")
+        for err in e.errors
+    )
 
 
 def simple_pagination(
@@ -265,7 +279,9 @@ def get_security_advisories(
     )
 
 
-def get_past(since: datetime.datetime | relativedelta | None) -> datetime.datetime | None:
+def get_past(
+    since: datetime.datetime | relativedelta | None,
+) -> datetime.datetime | None:
     """
     Get the past date based on the given datetime or timedelta.
 
@@ -284,7 +300,9 @@ def get_past(since: datetime.datetime | relativedelta | None) -> datetime.dateti
     elif type(since) == type(None):
         return None
     else:
-        raise TypeError("since not of type datetime.datetime, datetime.timedelta or None")
+        raise TypeError(
+            "since not of type datetime.datetime, datetime.timedelta or None"
+        )
 
 
 def get_osi_json():
@@ -294,7 +312,10 @@ def get_osi_json():
     if license is OSI approved (isOsiApproved)
     URL = https://raw.githubusercontent.com/spdx/license-list-data/master/json/licenses.json
     """
-    url = "https://raw.githubusercontent.com/" + "spdx/license-list-data/master/json/licenses.json"
+    url = (
+        "https://raw.githubusercontent.com/"
+        + "spdx/license-list-data/master/json/licenses.json"
+    )
     response = requests.get(url, timeout=100)
     results_dict = response.json().get("licenses")
     return results_dict
@@ -348,7 +369,9 @@ def date_filter(
         # if since is a timedelta object, use it to calculate the past date
         past = datetime.datetime.now(datetime.UTC) - since
     else:
-        raise TypeError("since not of type datetime.datetime, dateutil.relativedelta.relativedelta")
+        raise TypeError(
+            "since not of type datetime.datetime, dateutil.relativedelta.relativedelta"
+        )
 
     res = []
     for elem in data:
@@ -463,9 +486,9 @@ def is_branch_active(branch: dict) -> bool:
     # return datetime.datetime.now(datetime.UTC) - datetime.datetime.fromisoformat(
     #     branch["branch"]["commit"]["committedDate"]
     # ) > datetime.timedelta(days=30 * 3)
-    return datetime.datetime.fromisoformat(branch["branch"]["commit"]["committedDate"]) > (
-        datetime.datetime.now(datetime.UTC) - relativedelta(months=3)
-    )
+    return datetime.datetime.fromisoformat(
+        branch["branch"]["commit"]["committedDate"]
+    ) > (datetime.datetime.now(datetime.UTC) - relativedelta(months=3))
 
 
 def get_active_branches(branches: list[dict]) -> list[dict]:
